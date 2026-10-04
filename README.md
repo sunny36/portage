@@ -21,6 +21,33 @@ built for pipelines that run indefinitely at hundreds of GB/day.
   copied twice or skipped.
 - **Deletes off by default.**
 
+## Quickstart (local, 5 minutes)
+Runs a pipeline from an Azure Blob emulator (Azurite) to an S3-compatible
+emulator (SeaweedFS). Needs Docker and Go 1.26.
+
+```sh
+docker compose -f deploy/docker-compose.yml up -d --wait   # Postgres, Azurite, SeaweedFS
+go run ./examples/quickstart                               # creates container + bucket, uploads samples
+go run ./cmd/portage run -c examples/pipeline.yaml         # Ctrl-C to stop
+```
+In another terminal:
+```sh
+go run ./cmd/portage status -c examples/pipeline.yaml
+curl -s localhost:9090/metrics | grep '^portage_'
+```
+Files under `incoming/` in the `source` container appear under `from-azure/`
+in the `dest` bucket; `not-synced/` is outside the pipeline's prefix and
+stays put. The engine resumes where it left off after a restart.
+
+A Grafana dashboard for these metrics is in `deploy/grafana/`.
+
+## Configuration
+See [`examples/pipeline.yaml`](examples/pipeline.yaml), including the
+commented real-cloud shape (Azure → OCI Object Storage). On Azure, route
+Event Grid `BlobCreated`/`BlobDeleted` events to a Storage Queue
+(`events.type: azure_queue`); no inbound endpoint is needed. A periodic
+reconciler catches anything missed and performs the initial copy.
+
 ## Development
 ```sh
 docker compose -f deploy/docker-compose.yml up -d --wait   # Postgres, Azurite, SeaweedFS
