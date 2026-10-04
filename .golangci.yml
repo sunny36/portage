@@ -1,0 +1,88 @@
+# golangci-lint v2 configuration. Run with `make lint`.
+# Aim: catch real bugs and keep formatting uniform, without style noise.
+version: "2"
+
+run:
+  # Lint integration tests too.
+  build-tags:
+    - integration
+
+linters:
+  default: none
+  enable:
+    - bodyclose   # unclosed HTTP response bodies
+    - errcheck    # unchecked errors
+    - errorlint   # use errors.Is/As and %w with wrapped errors
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck # includes gosimple and stylecheck checks
+    - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # struct layout churn, no real benefit here
+        - shadow         # `err` shadowing is idiomatic
+    # misspell: no locale, so British spellings used in the codebase are fine.
+    revive:
+      # Only correctness-flavoured rules; no doc-comment or naming nags.
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: errorf
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unreachable-code
+        - name: var-declaration
+        - name: atomic
+        - name: defer
+        - name: waitgroup-by-value
+    staticcheck:
+      checks:
+        - all
+        - -ST1000 # package comments
+        - -ST1003 # initialisms (ID vs Id) — not worth churn
+        - -ST1020 # comment form on exported functions
+        - -ST1021
+        - -ST1022
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+
+formatters:
+  # gofmt (not gofumpt) so existing code doesn't need churn; goimports groups
+  # this module's imports last.
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/sunny36/portage
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

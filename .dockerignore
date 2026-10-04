@@ -1,0 +1,10 @@
+# The image is built by GoReleaser from a staged context; keep any manual
+# `docker build` context small too.
+.git
+.github
+bin
+dist
+bench
+docs
+*.test
+*.out
