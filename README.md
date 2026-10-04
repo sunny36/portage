@@ -68,6 +68,12 @@ Event Grid `BlobCreated`/`BlobDeleted` events to a Storage Queue
 (`events.type: azure_queue`); no inbound endpoint is needed. A periodic
 reconciler catches anything missed and performs the initial copy.
 
+Setting up real clouds: [Azure source](docs/setup/azure.md),
+[OCI destination](docs/setup/oci.md), and the
+[first real run checklist](docs/setup/first-real-run.md). Before `portage run`,
+`portage check` tests credentials, permissions, buckets, events and the
+database against the real endpoints and says how to fix what fails.
+
 ## Roadmap
 Portage is early. Here's what's built and what's next; priorities follow what
 users ask for, so [open an issue](https://github.com/sunny36/portage/issues)
@@ -81,10 +87,10 @@ if something here matters to you.
 - Resumable parallel multipart transfer, per-part MD5 and SHA-256
   verification, newest-version-wins file record
 - `portage run / status / validate`, Prometheus metrics, Grafana dashboard
+- `portage check` to test credentials, permissions, buckets and event
+  delivery before the first sync, with a fix hint for each failure
 
 **Next**
-- `portage check` to test credentials, permissions and event delivery
-  before the first sync
 - Published benchmark from a 24-hour Azure → OCI soak; the design targets
   are p95 lag under 60 s for files under 1 GB and 500 GB/day per pipeline
 - More sources: Amazon S3 (EventBridge), Google Cloud Storage (Pub/Sub),
