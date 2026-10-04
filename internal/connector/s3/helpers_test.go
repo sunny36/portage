@@ -57,21 +57,19 @@ func TestETagAndVersion(t *testing.T) {
 	if got := quoteETag(`"abc"`); got != `"abc"` {
 		t.Errorf("quoteETag already quoted = %s", got)
 	}
-	if got := makeVersion("", "e1"); got != "e1" {
-		t.Errorf("makeVersion no vid = %q", got)
+	if got := quoteETag("*"); got != "*" {
+		t.Errorf("quoteETag(*) = %s", got)
 	}
-	if got := makeVersion("null", "e1"); got != "e1" {
-		t.Errorf("makeVersion null vid = %q", got)
+}
+
+func TestConditions(t *testing.T) {
+	m, n := conditions(connector.WriteOptions{})
+	if m != nil || n != nil {
+		t.Fatalf("unconditional: %v %v", m, n)
 	}
-	v := makeVersion("3HL4kqtJ", "e1")
-	if v != "vid:3HL4kqtJ" {
-		t.Errorf("makeVersion vid = %q", v)
-	}
-	if vid, etag := splitVersion(v); vid != "3HL4kqtJ" || etag != "" {
-		t.Errorf("splitVersion(%q) = %q %q", v, vid, etag)
-	}
-	if vid, etag := splitVersion(`"e1"`); vid != "" || etag != "e1" {
-		t.Errorf("splitVersion etag = %q %q", vid, etag)
+	m, n = conditions(connector.WriteOptions{IfMatch: "e1", IfNoneMatch: "*"})
+	if aws.ToString(m) != `"e1"` || aws.ToString(n) != "*" {
+		t.Fatalf("conditions = %q %q", aws.ToString(m), aws.ToString(n))
 	}
 }
 
@@ -180,21 +178,6 @@ func TestMapErrorContext(t *testing.T) {
 	}
 	if mapError("x", "", nil) != nil {
 		t.Fatal("nil error mapped to non-nil")
-	}
-}
-
-func TestMapReadErrorPinned(t *testing.T) {
-	err := mapReadError("OpenRange", "k", true, sdkError(404, "NoSuchVersion"))
-	if !errors.Is(err, connector.ErrVersionChanged) || errors.Is(err, connector.ErrNotFound) {
-		t.Fatalf("pinned missing version: %v", err)
-	}
-	err = mapReadError("OpenRange", "k", true, sdkError(400, "InvalidArgument"))
-	if !errors.Is(err, connector.ErrVersionChanged) {
-		t.Fatalf("pinned invalid version id: %v", err)
-	}
-	err = mapReadError("OpenRange", "k", false, sdkError(404, "NoSuchKey"))
-	if !errors.Is(err, connector.ErrNotFound) {
-		t.Fatalf("unpinned missing: %v", err)
 	}
 }
 

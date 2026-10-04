@@ -49,23 +49,6 @@ func quoteETag(etag string) string {
 	return `"` + normalizeETag(etag) + `"`
 }
 
-// makeVersion picks the Version for an object: the tagged version ID when the
-// bucket is versioned, else the ETag.
-func makeVersion(versionID, etag string) string {
-	if versionID != "" && versionID != "null" {
-		return versionIDPrefix + versionID
-	}
-	return etag
-}
-
-// splitVersion is the inverse of makeVersion.
-func splitVersion(v string) (versionID, etag string) {
-	if id, ok := strings.CutPrefix(v, versionIDPrefix); ok {
-		return id, ""
-	}
-	return "", normalizeETag(v)
-}
-
 // md5FromETag returns the MD5 digest encoded in a single-part S3 ETag, or nil
 // for multipart ("<hex>-<n>") and any non-hex ETag.
 func md5FromETag(etag string) []byte {
@@ -124,11 +107,10 @@ var (
 // classify maps an S3 error code and HTTP status to a connector sentinel.
 // The code wins over the status because AWS answers bad credentials with 403
 // (InvalidAccessKeyId, SignatureDoesNotMatch) and ExpiredToken with 400.
-// NoSuchBucket deliberately maps to nil: treating a missing bucket as a
-// missing object could make the engine propagate deletes.
 func classify(code string, status int) error {
 	switch {
 	case code == "NoSuchBucket":
+		// Unmapped on purpose: ErrNotFound would read as "object deleted" and could propagate deletes.
 		return nil
 	case notFoundCodes[code]:
 		return connector.ErrNotFound
@@ -175,18 +157,4 @@ func mapError(op, key string, err error) error {
 	}
 	pe.Sentinel = classify(pe.Code, pe.Status)
 	return pe
-}
-
-// mapReadError is mapError for reads pinned to a version. A pinned version
-// that no longer exists (or that the provider rejects as malformed, e.g. a
-// version ID on an unversioned bucket) means the object changed: the caller
-// must restart from a fresh Stat, which reports ErrNotFound if it is gone.
-func mapReadError(op, key string, pinned bool, err error) error {
-	err = mapError(op, key, err)
-	var pe *connector.ProviderError
-	if pinned && errors.As(err, &pe) &&
-		(pe.Sentinel == connector.ErrNotFound || (pe.Status == http.StatusBadRequest && pe.Code == "InvalidArgument")) {
-		pe.Sentinel = connector.ErrVersionChanged
-	}
-	return err
 }

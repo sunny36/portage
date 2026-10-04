@@ -35,9 +35,6 @@ func (c *Connector) BeginUpload(ctx context.Context, key string, opts connector.
 	if opts.ContentType != "" {
 		in.ContentType = aws.String(opts.ContentType)
 	}
-	if _, _, err := conditions(opts); err != nil {
-		return nil, fmt.Errorf("s3: BeginUpload %q: %w", key, err)
-	}
 	out, err := c.client.CreateMultipartUpload(ctx, in)
 	if err != nil {
 		return nil, mapError("BeginUpload", key, err)
@@ -140,18 +137,14 @@ func (u *upload) Complete(ctx context.Context, parts []connector.Part) (connecto
 		UploadId:        aws.String(u.id),
 		MultipartUpload: &types.CompletedMultipartUpload{Parts: completed},
 	}
-	ifMatch, ifNoneMatch, err := conditions(u.opts)
-	if err != nil {
-		return connector.WriteResult{}, fmt.Errorf("s3: Complete %q: %w", u.key, err)
-	}
-	in.IfMatch, in.IfNoneMatch = ifMatch, ifNoneMatch
+	in.IfMatch, in.IfNoneMatch = conditions(u.opts)
 	out, err := u.c.client.CompleteMultipartUpload(ctx, in)
 	if err != nil {
 		return connector.WriteResult{}, mapError("Complete", u.key, err)
 	}
 	// Multipart ETags are never content MD5s; leave Checksums empty.
 	return connector.WriteResult{
-		Version: makeVersion(aws.ToString(out.VersionId), normalizeETag(aws.ToString(out.ETag))),
+		Version: normalizeETag(aws.ToString(out.ETag)),
 	}, nil
 }
 
@@ -170,9 +163,4 @@ func (u *upload) Abort(ctx context.Context) error {
 		return err
 	}
 	return nil
-}
-
-func conditions(opts connector.WriteOptions) (ifMatch, ifNoneMatch *string, err error) {
-	err = setConditions(&ifMatch, &ifNoneMatch, opts)
-	return ifMatch, ifNoneMatch, err
 }

@@ -4,17 +4,13 @@
 //
 // # Versions
 //
-// ObjectInfo.Version / WriteResult.Version is the object's ETag (quotes
-// stripped) on unversioned buckets. When the provider returns a real version
-// ID (bucket versioning on, not "null") from HeadObject, PutObject or
-// CompleteMultipartUpload, Version is "vid:" + VersionId instead. The tag
-// lets OpenRange tell the two apart without an extra request: an ETag is
-// enforced with If-Match (412 → ErrVersionChanged), a version ID is read
-// pinned with ?versionId= (a vanished version → ErrVersionChanged). OCI ETags
-// and OCI version IDs are both UUID-shaped, so they cannot be told apart by
-// looking at them. ListObjectsV2 does not return version IDs, so on a
-// versioned bucket List versions are ETags and differ from Stat versions; the
-// worker always Stats before copying, so this only costs a redundant Stat.
+// ObjectInfo.Version / WriteResult.Version is always the object's ETag
+// (quotes stripped), from List, Stat, PutObject and Complete alike, even on
+// versioned buckets. S3 version IDs are ignored: ListObjectsV2 does not
+// return them, and the reconciler compares List versions with Stat-derived
+// synced versions, so both must be the same kind of value. ETags change on
+// every overwrite, which is all the engine needs. OpenRange enforces the
+// version with If-Match (412 → ErrVersionChanged).
 //
 // # Flavors and provider quirks
 //
@@ -106,9 +102,6 @@ const (
 	// maxListKeys is the S3 ListObjectsV2 page size ceiling.
 	maxListKeys = 1000
 )
-
-// versionIDPrefix tags a Version that is an S3 version ID rather than an ETag.
-const versionIDPrefix = "vid:"
 
 var limits = connector.Limits{
 	MinPartSize:  5 << 20,
@@ -258,7 +251,7 @@ func (c *Connector) Stat(ctx context.Context, key string) (connector.ObjectInfo,
 	info := connector.ObjectInfo{
 		Key:      key,
 		Size:     aws.ToInt64(out.ContentLength),
-		Version:  makeVersion(aws.ToString(out.VersionId), etag),
+		Version:  etag,
 		ModTime:  aws.ToTime(out.LastModified),
 		Metadata: md,
 	}
@@ -278,33 +271,27 @@ func (c *Connector) OpenRange(ctx context.Context, key, version string, offset, 
 	if offset < 0 {
 		return nil, fmt.Errorf("s3: OpenRange %q: negative offset %d", key, offset)
 	}
-	vid, etag := splitVersion(version)
+	var ifMatch *string
+	if etag := normalizeETag(version); etag != "" {
+		ifMatch = aws.String(quoteETag(etag))
+	}
 	if length == 0 {
 		// HTTP ranges cannot express zero bytes; check existence/version only.
-		in := &s3sdk.HeadObjectInput{Bucket: aws.String(c.bucket), Key: aws.String(c.full(key))}
-		if vid != "" {
-			in.VersionId = aws.String(vid)
-		} else if etag != "" {
-			in.IfMatch = aws.String(quoteETag(etag))
-		}
-		if _, err := c.client.HeadObject(ctx, in); err != nil {
-			return nil, mapReadError("OpenRange", key, vid != "", err)
+		if _, err := c.client.HeadObject(ctx, &s3sdk.HeadObjectInput{
+			Bucket: aws.String(c.bucket), Key: aws.String(c.full(key)), IfMatch: ifMatch,
+		}); err != nil {
+			return nil, mapError("OpenRange", key, err)
 		}
 		return io.NopCloser(bytes.NewReader(nil)), nil
 	}
-	in := &s3sdk.GetObjectInput{Bucket: aws.String(c.bucket), Key: aws.String(c.full(key))}
+	in := &s3sdk.GetObjectInput{Bucket: aws.String(c.bucket), Key: aws.String(c.full(key)), IfMatch: ifMatch}
 	rng := rangeHeader(offset, length)
 	if rng != "" {
 		in.Range = aws.String(rng)
 	}
-	if vid != "" {
-		in.VersionId = aws.String(vid)
-	} else if etag != "" {
-		in.IfMatch = aws.String(quoteETag(etag))
-	}
 	out, err := c.client.GetObject(ctx, in)
 	if err != nil {
-		return nil, mapReadError("OpenRange", key, vid != "", err)
+		return nil, mapError("OpenRange", key, err)
 	}
 	if rng != "" && out.ContentRange == nil {
 		// The server ignored Range and is sending the whole object.
@@ -333,9 +320,7 @@ func (c *Connector) PutObject(ctx context.Context, key string, data io.Reader, s
 	if opts.ContentType != "" {
 		in.ContentType = aws.String(opts.ContentType)
 	}
-	if err := setConditions(&in.IfMatch, &in.IfNoneMatch, opts); err != nil {
-		return connector.WriteResult{}, fmt.Errorf("s3: PutObject %q: %w", key, err)
-	}
+	in.IfMatch, in.IfNoneMatch = conditions(opts)
 	var optFns []func(*s3sdk.Options)
 	if _, seekable := data.(io.Seeker); !seekable {
 		// SigV4 needs the payload hash up front, which needs a seekable
@@ -347,7 +332,7 @@ func (c *Connector) PutObject(ctx context.Context, key string, data io.Reader, s
 		return connector.WriteResult{}, mapError("PutObject", key, err)
 	}
 	etag := normalizeETag(aws.ToString(out.ETag))
-	res := connector.WriteResult{Version: makeVersion(aws.ToString(out.VersionId), etag)}
+	res := connector.WriteResult{Version: etag}
 	if c.flavor == FlavorAWS && out.SSECustomerAlgorithm == nil &&
 		out.ServerSideEncryption != types.ServerSideEncryptionAwsKms &&
 		out.ServerSideEncryption != types.ServerSideEncryptionAwsKmsDsse {
@@ -372,16 +357,13 @@ func (c *Connector) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-func setConditions(ifMatch, ifNoneMatch **string, opts connector.WriteOptions) error {
+// conditions converts WriteOptions preconditions into S3 header values.
+func conditions(opts connector.WriteOptions) (ifMatch, ifNoneMatch *string) {
 	if opts.IfMatch != "" {
-		vid, etag := splitVersion(opts.IfMatch)
-		if vid != "" {
-			return errors.New("conditional write on a version ID is not supported (If-Match needs an ETag)")
-		}
-		*ifMatch = aws.String(quoteETag(etag))
+		ifMatch = aws.String(quoteETag(opts.IfMatch))
 	}
 	if opts.IfNoneMatch != "" {
-		*ifNoneMatch = aws.String(opts.IfNoneMatch)
+		ifNoneMatch = aws.String(opts.IfNoneMatch)
 	}
-	return nil
+	return ifMatch, ifNoneMatch
 }
