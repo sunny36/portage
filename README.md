@@ -1,14 +1,27 @@
 # Portage
 
-Continuous one-way sync between object stores, across clouds.
+**Continuous one-way sync between object stores, across clouds.**
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/portage-hero-dark.svg">
+  <img alt="How Portage works: a new file in Azure Blob Storage is detected from a storage event (or a periodic reconciler scan if the event was lost), copied in parallel resumable parts, verified with SHA-256 and a read-back, and recorded so the newest version always wins. It then appears in OCI Object Storage." src="docs/assets/portage-hero-light.svg" width="100%">
+</picture>
 
 Portage keeps a destination bucket in step with a source bucket: every new or
 changed file is copied, checksum-verified and recorded, driven by the source's
 change events and backed by a reconciler that catches anything missed. It's
 built for pipelines that run indefinitely at hundreds of GB/day.
 
-> **Status: pre-release.** v0.1 targets Azure Blob Storage → Amazon S3 /
-> OCI Object Storage. GCS and SFTP follow.
+> **Status: pre-release.** v0.1 syncs Azure Blob Storage → Amazon S3 /
+> OCI Object Storage. More endpoints are on the [roadmap](#roadmap).
+
+### Why not a cron job or a Lambda?
+That's what most teams start with, and it breaks at volume: listings get
+slower than the schedule, a crash means re-copying everything or skipping
+files, lost events are never noticed, an out-of-order copy lets an older
+version overwrite a newer one, and nobody knows how far behind it is.
+Portage keeps a durable record of every file and version, reacts to events in
+seconds, reconciles in the background, and exposes lag as a metric.
 
 ## Guarantees
 - **Newest version wins.** An older version never overwrites a newer one.
@@ -47,6 +60,39 @@ commented real-cloud shape (Azure → OCI Object Storage). On Azure, route
 Event Grid `BlobCreated`/`BlobDeleted` events to a Storage Queue
 (`events.type: azure_queue`); no inbound endpoint is needed. A periodic
 reconciler catches anything missed and performs the initial copy.
+
+## Roadmap
+Portage is early. Here's what's built and what's next; priorities follow what
+users ask for, so [open an issue](https://github.com/sunny36/portage/issues)
+if something here matters to you.
+
+**v0.1 (now)**
+- Azure Blob Storage as source; Amazon S3, OCI Object Storage and other
+  S3-compatible stores as destination
+- Event-driven sync (Event Grid → Storage Queue, or a webhook) plus a
+  periodic reconciler for missed events and the initial copy
+- Resumable parallel multipart transfer, per-part MD5 and SHA-256
+  verification, newest-version-wins file record
+- `portage run / status / validate`, Prometheus metrics, Grafana dashboard
+
+**Next**
+- `portage check` to test credentials, permissions and event delivery
+  before the first sync
+- Published benchmark from a 24-hour Azure → OCI soak; the design targets
+  are p95 lag under 60 s for files under 1 GB and 500 GB/day per pipeline
+- More sources: Amazon S3 (EventBridge), Google Cloud Storage (Pub/Sub),
+  OCI Object Storage (OCI Events)
+- SFTP as source and destination (polling, with a size-settle or `.done`
+  rule so half-written files aren't picked up)
+- Azure Blob Storage as destination
+- Inventory-report reconciliation for very large buckets
+
+**Later**
+- Optional outbound-only agent for on-prem SFTP servers that can't accept
+  inbound connections
+- A hosted Portage with a web portal: one-click, least-privilege access
+  grants to each cloud; workers in the source's region; alerts; and feeds
+  between two companies that each connect their own storage
 
 ## Development
 ```sh
