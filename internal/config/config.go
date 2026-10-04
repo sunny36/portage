@@ -110,6 +110,9 @@ type Events struct {
 	QueueName       string `yaml:"queue_name"`
 	// Webhook: path under File.WebhookAddr, e.g. /events/azure-to-oci.
 	WebhookPath string `yaml:"webhook_path"`
+	// WebhookSecret must be presented by Event Grid as the `key` query
+	// parameter of the subscription URL. Required for webhook.
+	WebhookSecret string `yaml:"webhook_secret"`
 }
 
 // Filters select which keys a pipeline syncs. Patterns use path.Match syntax
@@ -244,6 +247,9 @@ func (f *File) Validate() error {
 		case "webhook":
 			if !strings.HasPrefix(p.Events.WebhookPath, "/") {
 				add("%s.events.webhook_path: must start with /", at)
+			}
+			if len(p.Events.WebhookSecret) < 16 {
+				add("%s.events.webhook_secret: required, at least 16 characters", at)
 			}
 		default:
 			add("%s.events.type: %q must be azure_queue, webhook or none", at, p.Events.Type)
