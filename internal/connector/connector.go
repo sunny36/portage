@@ -164,7 +164,9 @@ type Connector interface {
 	// BeginUpload starts a multipart upload.
 	BeginUpload(ctx context.Context, key string, opts WriteOptions) (Upload, error)
 	// ResumeUpload reopens a session started by BeginUpload, or returns
-	// ErrNotFound if it expired or was completed/aborted.
+	// ErrNotFound if it was completed/aborted. A session the provider expired
+	// may instead resume with no parts (Azure garbage-collects uncommitted
+	// blocks after 7 days); callers re-upload whatever ListParts lacks.
 	ResumeUpload(ctx context.Context, key, uploadID string, opts WriteOptions) (Upload, error)
 
 	// Delete removes key. Deleting a missing key is not an error.
