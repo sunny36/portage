@@ -306,11 +306,14 @@ func derefTime(p *time.Time) time.Time {
 	return p.UTC()
 }
 
+// etag returns the ETag without surrounding quotes. Azure quotes it in
+// response headers but not in List results; Version must be identical from
+// both or the reconciler sees every object as changed.
 func etag(e *azcore.ETag) string {
 	if e == nil {
 		return ""
 	}
-	return string(*e)
+	return strings.Trim(string(*e), `"`)
 }
 
 // normMeta lowercases metadata keys: Azure metadata names are case-insensitive

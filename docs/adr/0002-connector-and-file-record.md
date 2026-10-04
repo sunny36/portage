@@ -8,7 +8,9 @@ One Connector = one container/bucket scoped to a prefix; keys are relative.
 
 - `Version` is the ETag on every provider (never an S3 version ID), so List
   and Stat agree and the reconciler can compare listings to the file record.
-- Reads: `List(prefix, cursor, limit)` (recursive, key-ordered),
+- Reads: `List(prefix, cursor, limit)` (recursive, key-ordered — but NOT
+  necessarily UTF-8 byte order: Azurite sorts in UTF-16 order, and Azure only
+  documents "alphabetical"; the reconciler must not assume byte order),
   `Stat`, `OpenRange(key, version, offset, length)` with If-Match on version.
 - Writes: `PutObject` for small objects, `BeginUpload/ResumeUpload` →
   `UploadPart` (concurrent, idempotent per part number) → `Complete`/`Abort`.

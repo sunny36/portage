@@ -189,6 +189,14 @@ func testList(t *testing.T, c connector.Connector) {
 			if o.Version == "" || o.Size != int64(len(o.Key)) {
 				t.Errorf("list entry %+v missing version/size", o)
 			}
+			// The reconciler compares listed versions against versions from
+			// Stat stored in the file record, so they must be identical.
+			if st, err := c.Stat(ctx(t), o.Key); err != nil || st.Version != o.Version {
+				t.Errorf("List version %q != Stat version %q for %q (err %v)", o.Version, st.Version, o.Key, err)
+			}
+			if strings.ContainsAny(o.Version, `"`) {
+				t.Errorf("version %q contains quotes", o.Version)
+			}
 			got = append(got, o.Key)
 		}
 		if page.NextCursor == "" {
