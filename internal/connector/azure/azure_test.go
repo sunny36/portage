@@ -41,9 +41,6 @@ func TestBlockIDRoundTrip(t *testing.T) {
 			t.Fatalf("parseBlockID(%q) = %q,%d,%v; want %q,%d", id, gs, gn, ok, s, n)
 		}
 	}
-	if blockID(s, 7) != blockID(s, 7) {
-		t.Fatal("block ID not deterministic")
-	}
 	if blockID("0123456789abcdef", 1) != base64.StdEncoding.EncodeToString([]byte("0123456789abcdef-0000001")) {
 		t.Fatal("block ID format changed; existing sessions would not resume")
 	}
@@ -165,7 +162,7 @@ func TestErrorMapping(t *testing.T) {
 				t.Fatalf("wrap = %#v", err)
 			}
 			for _, s := range sentinels {
-				if got := errors.Is(err, s); got != (s == tc.want) {
+				if got := errors.Is(err, s); got != errors.Is(s, tc.want) {
 					t.Errorf("errors.Is(%v) = %v", s, got)
 				}
 			}

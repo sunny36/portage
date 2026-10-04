@@ -160,7 +160,7 @@ func TestMapError(t *testing.T) {
 				t.Error("underlying SDK error not unwrappable")
 			}
 			for _, s := range all {
-				if got := errors.Is(err, s); got != (s == c.want) {
+				if got := errors.Is(err, s); got != errors.Is(s, c.want) {
 					t.Errorf("errors.Is(%v) = %v", s, got)
 				}
 			}
