@@ -79,6 +79,17 @@ type Stats struct {
 // that silently see an empty bucket must not turn into a mass delete.
 var ErrEmptySource = errors.New("reconcile: source listing empty")
 
+// ErrMassDelete is returned instead of emitting deletes when a single pass
+// finds more than massDeleteMin files, and more than 1/massDeleteDenom of
+// all synced files, missing from the source. Like ErrEmptySource it guards
+// against a wrong prefix or a partially visible source, not real deletes.
+var ErrMassDelete = errors.New("reconcile: too many files missing from source")
+
+const (
+	massDeleteMin   = 100
+	massDeleteDenom = 4
+)
+
 // Run performs one reconcile pass. It returns the stats so far and the first
 // error from listing, the store or Emit.
 func Run(ctx context.Context, opts Options) (Stats, error) {
@@ -120,6 +131,8 @@ type run struct {
 	// candidates are live records with no source match in the join, held
 	// until the join ends and then confirmed with a Stat.
 	candidates []record.Record
+	// live counts records not marked deleted, for the mass-delete guard.
+	live int64
 }
 
 func (r *run) join(ctx context.Context) error {
@@ -151,10 +164,14 @@ func (r *run) join(ctx context.Context) error {
 		case haveRec && (!haveObj || rec.Key < obj.Key):
 			if rec.Status != record.StatusDeleted {
 				r.candidates = append(r.candidates, rec)
+				r.live++
 			}
 			rec, haveRec, err = recs.next(ctx)
 		default: // same key
 			r.stats.Listed++
+			if rec.Status != record.StatusDeleted {
+				r.live++
+			}
 			if err := r.both(ctx, obj, rec); err != nil {
 				return err
 			}
@@ -236,8 +253,12 @@ func (r *run) both(ctx context.Context, obj connector.ObjectInfo, rec record.Rec
 		return nil
 	}
 	if rec.Status == record.StatusCopying && rec.ClaimedUntil.After(r.opts.Now()) {
+		// Usually a live copy, but it may be a worker that died holding the
+		// lease (kill -9). Emit anyway: the job is deduped per claim
+		// generation, so at most one extra job per claim is queued; it waits
+		// while the lease is held and resumes the upload if it lapses,
+		// instead of the key waiting for the next reconcile pass.
 		r.stats.InFlight++
-		return nil
 	}
 	return r.upsert(ctx, obj)
 }
@@ -254,6 +275,7 @@ func sameVersion(a, b string) bool {
 // misaligned in the join (and handled through Store.Get) or re-created after
 // the listing (its event, or the next pass, handles it).
 func (r *run) confirmDeletes(ctx context.Context) error {
+	var gone []record.Record
 	for _, rec := range r.candidates {
 		if _, err := r.opts.Source.Stat(ctx, rec.Key); err == nil {
 			r.log.Debug("reconcile: delete candidate still exists; skipping", "key", rec.Key)
@@ -261,6 +283,14 @@ func (r *run) confirmDeletes(ctx context.Context) error {
 		} else if !errors.Is(err, connector.ErrNotFound) {
 			return fmt.Errorf("reconcile: confirm delete %q: %w", rec.Key, err)
 		}
+		gone = append(gone, rec)
+	}
+	if n := int64(len(gone)); n > massDeleteMin && n*massDeleteDenom > r.live {
+		return fmt.Errorf("%w: %d of %d synced files are gone from the source; refusing to emit deletes "+
+			"(check the source prefix and credentials; if this is intended, deletes are applied by events)",
+			ErrMassDelete, n, r.live)
+	}
+	for _, rec := range gone {
 		err := r.opts.Emit(ctx, change.ObjectChanged{
 			PipelineID: r.opts.PipelineID,
 			Kind:       change.KindDelete,

@@ -42,7 +42,7 @@ func (w *ReconcileWorker) Work(ctx context.Context, job *river.Job[queue.Reconci
 		Log:          w.e.log, // reconcile adds the pipeline attribute itself
 	})
 	w.e.m.ReconcileFinished(ctx, p.cfg.Name, st.Listed, st.Emitted, st.Deleted, st.Duration, err)
-	if errors.Is(err, reconcile.ErrEmptySource) {
+	if errors.Is(err, reconcile.ErrEmptySource) || errors.Is(err, reconcile.ErrMassDelete) {
 		// Likely a wrong prefix or revoked access. Don't retry in a loop;
 		// the next scheduled run tries again.
 		log.Error("reconcile refused: source listing is empty but files were synced before; check the source prefix and access", "err", err)

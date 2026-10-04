@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sort"
@@ -218,10 +219,13 @@ func TestMixed(t *testing.T) {
 		"changed":         change.KindUpsert,
 		"copying-expired": change.KindUpsert,
 		"new":             change.KindUpsert,
-		"pending":         change.KindUpsert,
-		"recreated":       change.KindUpsert,
-		"gone":            change.KindDelete,
-		"zz-gone":         change.KindDelete,
+		// Re-emitted although leased: the holder may have died (kill -9);
+		// the job is deduped per claim generation and waits out a live lease.
+		"copying-live": change.KindUpsert,
+		"pending":      change.KindUpsert,
+		"recreated":    change.KindUpsert,
+		"gone":         change.KindDelete,
+		"zz-gone":      change.KindDelete,
 	}
 	got := out.summary()
 	if len(got) != len(want) {
@@ -232,7 +236,7 @@ func TestMixed(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", k, got[k], v)
 		}
 	}
-	if st.Listed != 7 || st.Emitted != 5 || st.Deleted != 2 || st.AlreadySynced != 1 || st.InFlight != 1 {
+	if st.Listed != 7 || st.Emitted != 6 || st.Deleted != 2 || st.AlreadySynced != 1 || st.InFlight != 1 {
 		t.Fatalf("stats %+v", st)
 	}
 	for _, c := range out.got {
@@ -453,5 +457,38 @@ func TestQuotedVersionsMatch(t *testing.T) {
 	st, out, err := runRec(t, src, store, nil)
 	if err != nil || len(out.got) != 0 || st.AlreadySynced != 1 {
 		t.Fatalf("err=%v stats=%+v got=%+v", err, st, out.got)
+	}
+}
+
+func TestMassDeleteGuard(t *testing.T) {
+	// 400 synced files; the source still lists 200, so 200 are "gone".
+	// That's above both thresholds (>100 files and >1/4 of live records).
+	var recs []record.Record
+	var objs []connector.ObjectInfo
+	for i := range 400 {
+		k := fmt.Sprintf("f%04d", i)
+		recs = append(recs, synced(k, "v1"))
+		if i%2 == 0 {
+			objs = append(objs, obj(k, "v1"))
+		}
+	}
+	_, out, err := runRec(t, &fakeSource{objs: objs}, &fakeStore{recs: recs}, nil)
+	if !errors.Is(err, ErrMassDelete) {
+		t.Fatalf("err = %v, want ErrMassDelete", err)
+	}
+	for _, c := range out.got {
+		if c.Kind == change.KindDelete {
+			t.Fatalf("emitted a delete despite the guard: %+v", c)
+		}
+	}
+
+	// A handful of real deletes (3 of 400) still goes through.
+	var all []connector.ObjectInfo
+	for i := 3; i < 400; i++ {
+		all = append(all, obj(fmt.Sprintf("f%04d", i), "v1"))
+	}
+	st, _, err := runRec(t, &fakeSource{objs: all}, &fakeStore{recs: recs}, nil)
+	if err != nil || st.Deleted != 3 {
+		t.Fatalf("deleted %d, err %v; want 3 deletes", st.Deleted, err)
 	}
 }

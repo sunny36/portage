@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -188,6 +189,12 @@ type ProviderError struct {
 }
 
 func (e *ProviderError) Error() string {
+	// Lead with the category ("permission denied", "throttled", ...) so logs,
+	// alerts and the file record's last_error are easy to match.
+	if e.Sentinel != nil {
+		return fmt.Sprintf("%s %q: %s: status=%d code=%s: %v", e.Op, e.Key,
+			strings.TrimPrefix(e.Sentinel.Error(), "connector: "), e.Status, e.Code, e.Err)
+	}
 	return fmt.Sprintf("%s %q: status=%d code=%s: %v", e.Op, e.Key, e.Status, e.Code, e.Err)
 }
 

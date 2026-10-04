@@ -578,8 +578,11 @@ func testCrashResume(t *testing.T, abandon bool) {
 	if fmt.Sprint(run2) != "[4 5 6]" {
 		t.Errorf("restart uploaded parts %v, want [4 5 6] (parts 1-3 reused from the session)", run2)
 	}
-	if total >= 2*parts {
-		t.Errorf("total UploadPart calls = %d, want < %d", total, 2*parts)
+	// Count successful uploads, not calls: the shared emulator sometimes
+	// answers 500 under parallel load, and those retried calls are not
+	// re-uploads of finished parts.
+	if len(all) != parts {
+		t.Errorf("parts uploaded successfully = %d (%v), want %d: each part exactly once", len(all), all, parts)
 	}
 	if h.dstF.Calls(opResumeUpload) == 0 {
 		t.Error("restart never resumed the multipart session")
