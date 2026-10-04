@@ -16,8 +16,13 @@ One Connector = one container/bucket scoped to a prefix; keys are relative.
   S3 to multipart upload.
 - Errors wrap sentinels (`ErrNotFound`, `ErrThrottled`, `ErrVersionChanged`,
   `ErrPermission`, `ErrAuth`) so callers use `errors.Is`.
-- Every object Portage writes carries user metadata `portagesha256` (hex).
-  No hyphen/underscore: Azure needs C#-identifier names.
+- Objects Portage writes in a single PUT carry user metadata `portagesha256`
+  (hex); no hyphen/underscore, since Azure needs C#-identifier names.
+  Multipart uploads can't on S3 (metadata is fixed when the upload starts,
+  before the hash is known), so the file record is the authority for the
+  hash. Integrity on the wire comes from per-part Content-MD5; after the
+  write, sampled ranges (head, tail, one random 1 MiB window) are read back
+  and compared.
 - Behaviour is pinned by `internal/connector/connectortest`, which every
   connector's integration test must pass.
 

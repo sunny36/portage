@@ -12,8 +12,11 @@ built for pipelines that run indefinitely at hundreds of GB/day.
 
 ## Guarantees
 - **Newest version wins.** An older version never overwrites a newer one.
-- **Checksum-verified.** SHA-256 computed while streaming and stored on the
-  destination object (`portagesha256` metadata).
+- **Checksum-verified.** Every part is checked by the destination on upload
+  (Content-MD5). The SHA-256 of the full content is computed while streaming
+  and kept in the file record, and sampled ranges are read back from the
+  destination and compared. Objects small enough for a single upload also
+  carry the hash as `portagesha256` metadata.
 - **Safe to retry.** A crash mid-copy resumes the multipart upload; nothing is
   copied twice or skipped.
 - **Deletes off by default.**
