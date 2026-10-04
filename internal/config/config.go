@@ -119,7 +119,9 @@ type Filters struct {
 	Exclude []string `yaml:"exclude"`
 }
 
-var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,40}$`)
+// nameRE matches what River accepts in a queue name (no leading, trailing or
+// doubled hyphens). Length is checked separately.
+var nameRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // Load reads path, expands ${ENV} references, applies defaults and validates.
 func Load(path string) (*File, error) {
@@ -216,8 +218,8 @@ func (f *File) Validate() error {
 	seen := map[string]bool{}
 	for i, p := range f.Pipelines {
 		at := fmt.Sprintf("pipelines[%d]", i)
-		if !nameRE.MatchString(p.Name) {
-			add("%s.name: %q must match %s", at, p.Name, nameRE)
+		if !nameRE.MatchString(p.Name) || len(p.Name) < 2 || len(p.Name) > 40 {
+			add("%s.name: %q must be 2-40 chars of lowercase letters, digits and single hyphens", at, p.Name)
 		}
 		if seen[p.Name] {
 			add("%s.name: duplicate %q", at, p.Name)

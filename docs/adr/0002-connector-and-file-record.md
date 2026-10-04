@@ -46,3 +46,11 @@ API is tested against a real free-tier bucket.
    newer completion.
 
 Repeating any step is safe: same key + same version is a no-op or a resume.
+
+### Known limitation (v0.1)
+Leases are identified by (key, version), not a per-claim token. If worker A's
+lease expires and worker B takes over the same version, a late `Complete`
+from A still succeeds (and B then gets `ErrLeaseLost`). Both copied identical
+bytes of the same version, so the result is correct; they may briefly share a
+multipart session. A claim token can be added to `ExtendLease`/`SetUpload`/
+`Complete`/`Fail` later if this shows up in failure tests.

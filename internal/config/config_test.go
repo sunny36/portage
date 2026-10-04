@@ -78,3 +78,13 @@ func TestParseByteSize(t *testing.T) {
 		t.Error("want error")
 	}
 }
+
+func TestPipelineNames(t *testing.T) {
+	for name, ok := range map[string]bool{"ab": true, "azure-to-oci": true, "a": false, "ab-": false, "a--b": false, "-ab": false, "Ab": false} {
+		f := File{Version: 1, DatabaseURL: "x", Pipelines: []Pipeline{{Name: name}}}
+		err := f.Validate()
+		if got := err == nil || !strings.Contains(err.Error(), ".name:"); got != ok {
+			t.Errorf("name %q: valid=%v, want %v (%v)", name, got, ok, err)
+		}
+	}
+}
