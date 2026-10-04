@@ -6,6 +6,8 @@ Status: accepted (2026-10-05)
 `internal/connector/connector.go` is the only way the engine touches storage.
 One Connector = one container/bucket scoped to a prefix; keys are relative.
 
+- `Version` is the ETag on every provider (never an S3 version ID), so List
+  and Stat agree and the reconciler can compare listings to the file record.
 - Reads: `List(prefix, cursor, limit)` (recursive, key-ordered),
   `Stat`, `OpenRange(key, version, offset, length)` with If-Match on version.
 - Writes: `PutObject` for small objects, `BeginUpload/ResumeUpload` →

@@ -54,9 +54,10 @@ func IsRetryable(err error) bool {
 type ObjectInfo struct {
 	Key  string
 	Size int64
-	// Version is an opaque, provider-specific identifier of this exact content
-	// (S3 version ID if versioning is on, else ETag; Azure ETag). Equal Version
-	// means identical content. It is NOT orderable; use ModTime/Sequencer.
+	// Version is the object's ETag (quotes stripped) on every provider, even
+	// on versioned buckets, so List, Stat and writes all report the same value
+	// and OpenRange can use it with If-Match. Equal Version means identical
+	// content. It is NOT orderable; use ModTime/Sequencer.
 	Version string
 	ModTime time.Time
 	// Sequencer orders writes to the same key when the provider exposes it
