@@ -7,3 +7,5 @@ coverage.*
 .env.*
 /bench/results/raw/
 /.claude/
+__pycache__/
+*.pyc
