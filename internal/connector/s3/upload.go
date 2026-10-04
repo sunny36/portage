@@ -3,6 +3,8 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"sort"
@@ -71,6 +73,10 @@ func (u *upload) UploadPart(ctx context.Context, number int, data []byte) (conne
 	if number < 1 || number > limits.MaxParts {
 		return connector.Part{}, fmt.Errorf("s3: UploadPart %q: part number %d out of range 1..%d", u.key, number, limits.MaxParts)
 	}
+	// Content-MD5 makes the provider reject a part corrupted in transit. It is
+	// supported by S3, OCI and other S3-compatibles, unlike the newer
+	// x-amz-checksum-* headers.
+	sum := md5.Sum(data)
 	out, err := u.c.client.UploadPart(ctx, &s3sdk.UploadPartInput{
 		Bucket:        aws.String(u.c.bucket),
 		Key:           aws.String(u.c.full(u.key)),
@@ -78,6 +84,7 @@ func (u *upload) UploadPart(ctx context.Context, number int, data []byte) (conne
 		PartNumber:    aws.Int32(int32(number)),
 		Body:          bytes.NewReader(data),
 		ContentLength: aws.Int64(int64(len(data))),
+		ContentMD5:    aws.String(base64.StdEncoding.EncodeToString(sum[:])),
 	})
 	if err != nil {
 		return connector.Part{}, mapError("UploadPart", u.key, err)

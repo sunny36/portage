@@ -125,7 +125,9 @@ type Part struct {
 
 // Upload is an in-progress multipart upload. UploadPart may be called
 // concurrently for different part numbers. Re-uploading the same part number
-// replaces it (this is what makes retries safe).
+// replaces it (this is what makes retries safe). UploadPart must have the
+// provider verify each part in transit (Content-MD5 or a native checksum),
+// so a corrupted part is rejected rather than stored.
 type Upload interface {
 	// ID identifies the session so it can be resumed after a crash. It is
 	// persisted in the file record.
