@@ -31,7 +31,7 @@ func TestDefaultsAndEnv(t *testing.T) {
 database_url: postgres://x
 pipelines:
   - name: p1
-    source: {azure: {account_url: https://a, container: c}}
+    source: {prefix: /exports, azure: {account_url: https://a, container: c}}
     destination: {s3: {bucket: b, region: r, access_key_id: id, secret_access_key: ${KEY}}}
     events: {type: none}
 `))
@@ -39,6 +39,9 @@ pipelines:
 		t.Fatal(err)
 	}
 	p := f.Pipelines[0]
+	if p.Source.Prefix != "exports/" {
+		t.Errorf("prefix not normalised: %q", p.Source.Prefix)
+	}
 	if p.Destination.S3.SecretAccessKey != "secret" {
 		t.Errorf("env not expanded")
 	}

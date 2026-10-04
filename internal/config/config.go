@@ -184,6 +184,11 @@ func (f *File) applyDefaults() {
 			p.Events.WebhookPath = "/events/" + p.Name
 		}
 		for _, e := range []*Endpoint{&p.Source, &p.Destination} {
+			// A prefix is a folder: "exports" must not also match "exportsX/".
+			e.Prefix = strings.TrimLeft(e.Prefix, "/")
+			if e.Prefix != "" && !strings.HasSuffix(e.Prefix, "/") {
+				e.Prefix += "/"
+			}
 			if e.Azure != nil && e.Azure.Auth == "" {
 				e.Azure.Auth = "default"
 			}

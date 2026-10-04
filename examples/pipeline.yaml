@@ -33,7 +33,8 @@ pipelines:
     part_size: 8MiB
     reconcile_interval: 1m
 
-# Real-cloud shape (Azure -> OCI), for reference:
+# Real-cloud shape (Azure Southeast Asia -> OCI Singapore), for reference.
+# Run the engine in the source's region so each file leaves Azure once.
 #
 #  - name: azure-to-oci
 #    source:
@@ -44,8 +45,8 @@ pipelines:
 #    destination:
 #      s3:
 #        bucket: imports
-#        region: eu-frankfurt-1
-#        endpoint: https://<namespace>.compat.objectstorage.eu-frankfurt-1.oraclecloud.com
+#        region: ap-singapore-1
+#        endpoint: https://<namespace>.compat.objectstorage.ap-singapore-1.oraclecloud.com
 #        path_style: true
 #        flavor: oci
 #        access_key_id: ${OCI_S3_ACCESS_KEY_ID}
