@@ -21,6 +21,10 @@ const (
 	// JobTimeout bounds one job attempt; generous for multi-GB copies (the
 	// worker extends its file-record lease while it runs).
 	JobTimeout = time.Hour
+	// RescueStuckJobsAfter must exceed the longest worker timeout (copies:
+	// 6h) so a live long copy is never rescued. Crashed copies don't wait
+	// for this: CopyArgs.Generation lets a new job be queued at once.
+	RescueStuckJobsAfter = 7 * time.Hour
 	// MaxAttempts before River discards a job.
 	MaxAttempts = 25
 	// MaxRetryBackoff caps the exponential retry delay.
@@ -72,12 +76,13 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 // so several engine instances never duplicate them.
 func NewClient(pool *pgxpool.Pool, workers *river.Workers, queues map[string]river.QueueConfig, periodic ...*river.PeriodicJob) (*river.Client[pgx.Tx], error) {
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues:       queues,
-		Workers:      workers,
-		PeriodicJobs: periodic,
-		JobTimeout:   JobTimeout,
-		MaxAttempts:  MaxAttempts,
-		RetryPolicy:  &RetryPolicy{Max: MaxRetryBackoff},
+		Queues:               queues,
+		Workers:              workers,
+		PeriodicJobs:         periodic,
+		JobTimeout:           JobTimeout,
+		MaxAttempts:          MaxAttempts,
+		RetryPolicy:          &RetryPolicy{Max: MaxRetryBackoff},
+		RescueStuckJobsAfter: RescueStuckJobsAfter,
 	})
 }
 

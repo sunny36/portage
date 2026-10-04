@@ -17,6 +17,12 @@ type CopyArgs struct {
 	EventTime  time.Time `json:"event_time"`
 	DetectedAt time.Time `json:"detected_at"`
 	Origin     string    `json:"origin"`
+	// Generation is the file record's attempt count when this job was
+	// enqueued. It is part of the dedupe key: repeats of an event collapse,
+	// but once a worker has claimed the key (bumping the count) a new job
+	// can be queued even if the claiming worker died with its job still
+	// 'running' in River.
+	Generation int `json:"generation" river:"unique"`
 }
 
 func (CopyArgs) Kind() string { return "copy" }

@@ -113,7 +113,10 @@ func Run(ctx context.Context, cfg *config.File, m *metrics.Metrics, log *slog.Lo
 		return err
 	}
 
-	if err := e.client.Start(ctx); err != nil {
+	// Workers get a context that outlives the shutdown signal: on shutdown
+	// running copies get shutdownTimeout to finish and record their result,
+	// instead of being cut off mid-write.
+	if err := e.client.Start(context.WithoutCancel(ctx)); err != nil {
 		return fmt.Errorf("start workers: %w", err)
 	}
 	log.Info("engine started", "pipelines", len(e.pipelines))
@@ -132,9 +135,16 @@ func Run(ctx context.Context, cfg *config.File, m *metrics.Metrics, log *slog.Lo
 
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
-	log.Info("stopping workers")
+	log.Info("stopping workers; waiting for running copies", "timeout", shutdownTimeout)
 	if err := e.client.Stop(stopCtx); err != nil {
-		log.Warn("workers did not stop cleanly; unfinished copies resume on next start", "err", err)
+		// Cancel what's left. Interrupted copies release their lease and keep
+		// their upload session, so the next start resumes them.
+		log.Warn("copies still running after timeout; cancelling them (they resume on next start)")
+		hardCtx, hardCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer hardCancel()
+		if err := e.client.StopAndCancel(hardCtx); err != nil {
+			log.Warn("workers did not stop cleanly", "err", err)
+		}
 	}
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
 		return runErr
@@ -280,7 +290,15 @@ func (e *Engine) emit(ctx context.Context, c change.ObjectChanged) error {
 			return fmt.Errorf("observe: %w", err)
 		}
 	}
+	gen := 0
+	switch rec, err := e.store.Get(ctx, c.PipelineID, c.Key); {
+	case err == nil:
+		gen = rec.Attempts
+	case !errors.Is(err, record.ErrNotFound):
+		return fmt.Errorf("read record: %w", err)
+	}
 	return queue.InsertCopy(ctx, e.client, queue.CopyArgs{
+		Generation: gen,
 		PipelineID: c.PipelineID,
 		Key:        c.Key,
 		Version:    c.Version,

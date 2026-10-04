@@ -116,7 +116,11 @@ func (w *CopyWorker) Work(ctx context.Context, job *river.Job[queue.CopyArgs]) e
 	}
 
 	now := time.Now()
-	err = w.e.store.Complete(ctx, p.cfg.Name, args.Key, info.Version, record.SyncResult{
+	// The object is written and verified: record it even if we're being
+	// cancelled, or the next run would copy it again.
+	doneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	err = w.e.store.Complete(doneCtx, p.cfg.Name, args.Key, info.Version, record.SyncResult{
 		SHA256: res.SHA256, DestVersion: res.DestVersion, SyncedAt: now,
 	})
 	if errors.Is(err, record.ErrLeaseLost) {
@@ -144,7 +148,15 @@ func (w *CopyWorker) copyFailed(ctx context.Context, p *pipelineRuntime, log *sl
 		return nil
 	}
 	if ctx.Err() != nil {
-		// Shutdown or timeout: the lease will lapse and the upload resumes.
+		// Shutdown or timeout. Release the lease now (keeping the upload
+		// session) so a restart resumes immediately instead of waiting for
+		// the lease to lapse.
+		relCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := w.e.store.Fail(relCtx, p.cfg.Name, info.Key, info.Version, cause, true); err != nil &&
+			!errors.Is(err, record.ErrLeaseLost) {
+			log.Warn("releasing lease after interruption", "err", err)
+		}
 		return cause
 	}
 	retryable := connector.IsRetryable(cause) || errors.Is(cause, connector.ErrVersionChanged)
