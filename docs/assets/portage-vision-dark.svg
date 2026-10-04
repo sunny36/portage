@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" width="1200" height="750" role="img"
+  aria-labelledby="t d">
+<title id="t">Portage: one sync engine between every cloud</title>
+<desc id="d">Portage sits between object stores and keeps files flowing one way from a source to a
+destination: Azure Blob Storage, Amazon S3, Google Cloud Storage, OCI Object Storage and on-prem SFTP.
+Each file is detected, copied, verified and recorded, and a reconciler catches missed events.
+Available in v0.1: Azure Blob Storage as a source; Amazon S3 and OCI Object Storage as destinations.
+On the roadmap: Google Cloud Storage, on-prem SFTP, and every endpoint as both source and destination.</desc>
+<defs>
+  <style>
+  text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; fill: #E4ECEA; }
+  .title { font-size: 44px; font-weight: 800; letter-spacing: -.015em; }
+  .name { font-size: 20px; font-weight: 700; }
+  .sub { font-size: 17px; fill: #93A4A6; }
+  .pill { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; font-weight: 700; letter-spacing: .02em; }
+  .chip { font-size: 16px; font-weight: 700; fill: #3CC2AC; }
+  .note { font-size: 16px; fill: #93A4A6; }
+  .legend { font-size: 16px; fill: #93A4A6; }
+  .eyebrow { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 15px; letter-spacing: .14em; font-weight: 700; fill: #3CC2AC; }
+  @media (prefers-reduced-motion: reduce) { .pkt { display: none; } }
+</style>
+  <filter id="lift" x="-10%" y="-10%" width="120%" height="130%">
+    <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.45"/>
+  </filter>
+</defs>
+<rect width="1200" height="750" rx="20" fill="#0F1719"/>
+<text x="600.0" y="54" class="eyebrow" text-anchor="middle">ANY CLOUD · ANY COMPANY · ON-PREM</text>
+<path d="M324,156.0 C362.0,156.0 362.0,300 400,300" fill="none" stroke="#3CC2AC" stroke-width="2.5" stroke-linecap="round"/>
+<path d="M324,534.0 C362.0,534.0 362.0,400 400,400" fill="none" stroke="#3CC2AC" stroke-width="2.5" stroke-linecap="round"/>
+<path d="M876,156.0 C838.0,156.0 838.0,300 800,300" fill="none" stroke="#33464A" stroke-width="2" stroke-dasharray="7 7" stroke-linecap="round"/>
+<path d="M876,534.0 C838.0,534.0 838.0,400 800,400" fill="none" stroke="#3CC2AC" stroke-width="2.5" stroke-linecap="round"/>
+<path d="M600.0,584 V464" fill="none" stroke="#33464A" stroke-width="2" stroke-dasharray="7 7" stroke-linecap="round"/>
+<rect x="400" y="236" width="400" height="228" rx="26" fill="#13302C" stroke="#3CC2AC" stroke-width="2.5" filter="url(#lift)"/>
+<text x="600.0" y="306" class="title" text-anchor="middle">Portage</text>
+<text x="600.0" y="336" class="sub" text-anchor="middle">continuous one-way sync</text>
+<rect x="432" y="360" width="78" height="32" rx="8" fill="#172226" stroke="#3CC2AC" stroke-width="1.2"/>
+<text x="471" y="381" class="chip" text-anchor="middle">Detect</text>
+<rect x="518" y="360" width="78" height="32" rx="8" fill="#172226" stroke="#3CC2AC" stroke-width="1.2"/>
+<text x="557" y="381" class="chip" text-anchor="middle">Copy</text>
+<rect x="604" y="360" width="78" height="32" rx="8" fill="#172226" stroke="#3CC2AC" stroke-width="1.2"/>
+<text x="643" y="381" class="chip" text-anchor="middle">Verify</text>
+<rect x="690" y="360" width="78" height="32" rx="8" fill="#172226" stroke="#3CC2AC" stroke-width="1.2"/>
+<text x="729" y="381" class="chip" text-anchor="middle">Record</text>
+<text x="600.0" y="422" class="note" text-anchor="middle">+ reconciler for missed events</text>
+<circle cx="400" cy="300" r="6" fill="#172226" stroke="#3CC2AC" stroke-width="2"/>
+<circle cx="400" cy="400" r="6" fill="#172226" stroke="#3CC2AC" stroke-width="2"/>
+<circle cx="800" cy="300" r="6" fill="#172226" stroke="#3CC2AC" stroke-width="2"/>
+<circle cx="800" cy="400" r="6" fill="#172226" stroke="#3CC2AC" stroke-width="2"/>
+<circle cx="600.0" cy="464" r="6" fill="#172226" stroke="#3CC2AC" stroke-width="2"/>
+<rect x="40" y="100" width="284" height="112" rx="16" fill="#172226" stroke="#33464A" stroke-width="1.5" filter="url(#lift)"/>
+<ellipse cx="73" cy="129" rx="13" ry="5" fill="none" stroke="#3CC2AC" stroke-width="1.8"/><path d="M60,129 L63.5,155 Q73,160 82.5,155 L86,129" fill="none" stroke="#3CC2AC" stroke-width="1.8" stroke-linejoin="round"/>
+<text x="100" y="140" class="name">Azure Blob Storage</text>
+<text x="100" y="164" class="sub">Event Grid</text>
+<rect x="100" y="176" width="127" height="24" rx="12" fill="#13302C"/>
+<text x="163" y="193" class="pill" text-anchor="middle" style="fill:#3CC2AC">source · v0.1</text>
+<rect x="40" y="478" width="284" height="112" rx="16" fill="#172226" stroke="#33464A" stroke-width="1.5" filter="url(#lift)"/>
+<ellipse cx="73" cy="507" rx="13" ry="5" fill="none" stroke="#3CC2AC" stroke-width="1.8"/><path d="M60,507 L63.5,533 Q73,538 82.5,533 L86,507" fill="none" stroke="#3CC2AC" stroke-width="1.8" stroke-linejoin="round"/>
+<text x="100" y="518" class="name">Amazon S3</text>
+<text x="100" y="542" class="sub">EventBridge</text>
+<rect x="100" y="554" width="170" height="24" rx="12" fill="#13302C"/>
+<text x="185" y="571" class="pill" text-anchor="middle" style="fill:#3CC2AC">destination · v0.1</text>
+<rect x="876" y="100" width="284" height="112" rx="16" fill="#172226" stroke="#33464A" stroke-width="1.5" filter="url(#lift)"/>
+<ellipse cx="909" cy="129" rx="13" ry="5" fill="none" stroke="#93A4A6" stroke-width="1.8"/><path d="M896,129 L899.5,155 Q909,160 918.5,155 L922,129" fill="none" stroke="#93A4A6" stroke-width="1.8" stroke-linejoin="round"/>
+<text x="936" y="140" class="name">Google Cloud Storage</text>
+<text x="936" y="164" class="sub">Pub/Sub</text>
+<rect x="936" y="176" width="75" height="24" rx="12" fill="#1D2B30"/>
+<text x="974" y="193" class="pill" text-anchor="middle" style="fill:#93A4A6">roadmap</text>
+<rect x="876" y="478" width="284" height="112" rx="16" fill="#172226" stroke="#33464A" stroke-width="1.5" filter="url(#lift)"/>
+<ellipse cx="909" cy="507" rx="13" ry="5" fill="none" stroke="#3CC2AC" stroke-width="1.8"/><path d="M896,507 L899.5,533 Q909,538 918.5,533 L922,507" fill="none" stroke="#3CC2AC" stroke-width="1.8" stroke-linejoin="round"/>
+<text x="936" y="518" class="name">OCI Object Storage</text>
+<text x="936" y="542" class="sub">OCI Events</text>
+<rect x="936" y="554" width="170" height="24" rx="12" fill="#13302C"/>
+<text x="1021" y="571" class="pill" text-anchor="middle" style="fill:#3CC2AC">destination · v0.1</text>
+<rect x="458" y="584" width="284" height="112" rx="16" fill="#172226" stroke="#33464A" stroke-width="1.5" filter="url(#lift)"/>
+<rect x="478" y="608" width="26" height="14" rx="3" fill="none" stroke="#93A4A6" stroke-width="1.8"/><rect x="478" y="627" width="26" height="14" rx="3" fill="none" stroke="#93A4A6" stroke-width="1.8"/><circle cx="498" cy="615" r="1.8" fill="#93A4A6"/><circle cx="498" cy="634" r="1.8" fill="#93A4A6"/>
+<text x="518" y="624" class="name">On-prem SFTP</text>
+<text x="518" y="648" class="sub">poll + settle rule</text>
+<rect x="518" y="660" width="75" height="24" rx="12" fill="#1D2B30"/>
+<text x="556" y="677" class="pill" text-anchor="middle" style="fill:#93A4A6">roadmap</text>
+<g class="pkt" opacity="0"><rect x="-8" y="-10" width="16" height="20" rx="3" fill="#3CC2AC"/><path d="M-3,-10 v5 h-5" fill="none" stroke="#ffffff" stroke-opacity=".6" stroke-width="1.4"/><animateMotion dur="4.2s" begin="0.0s" repeatCount="indefinite" path="M324,156.0 C362.0,156.0 362.0,300 400,300" keyTimes="0;0.42;1" keyPoints="0;1;1" calcMode="linear"/><animate attributeName="opacity" dur="4.2s" begin="0.0s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.38;0.44;1"/></g>
+<g class="pkt" opacity="0"><rect x="-8" y="-10" width="16" height="20" rx="3" fill="#3CC2AC"/><path d="M-3,-10 v5 h-5" fill="none" stroke="#ffffff" stroke-opacity=".6" stroke-width="1.4"/><animateMotion dur="4.2s" begin="0.0s" repeatCount="indefinite" path="M800,400 C838.0,400 838.0,534.0 876,534.0" keyTimes="0;0.58;1" keyPoints="0;0;1" calcMode="linear"/><animate attributeName="opacity" dur="4.2s" begin="0.0s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.56;0.62;0.94;1"/></g>
+<g class="pkt" opacity="0"><rect x="-8" y="-10" width="16" height="20" rx="3" fill="#E39D4E"/><path d="M-3,-10 v5 h-5" fill="none" stroke="#ffffff" stroke-opacity=".6" stroke-width="1.4"/><animateMotion dur="4.6s" begin="1.3s" repeatCount="indefinite" path="M876,156.0 C838.0,156.0 838.0,300 800,300" keyTimes="0;0.42;1" keyPoints="0;1;1" calcMode="linear"/><animate attributeName="opacity" dur="4.6s" begin="1.3s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.38;0.44;1"/></g>
+<g class="pkt" opacity="0"><rect x="-8" y="-10" width="16" height="20" rx="3" fill="#E39D4E"/><path d="M-3,-10 v5 h-5" fill="none" stroke="#ffffff" stroke-opacity=".6" stroke-width="1.4"/><animateMotion dur="4.6s" begin="1.3s" repeatCount="indefinite" path="M400,400 C362.0,400 362.0,534.0 324,534.0" keyTimes="0;0.58;1" keyPoints="0;0;1" calcMode="linear"/><animate attributeName="opacity" dur="4.6s" begin="1.3s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.56;0.62;0.94;1"/></g>
+<g class="pkt" opacity="0"><rect x="-8" y="-10" width="16" height="20" rx="3" fill="#9496EE"/><path d="M-3,-10 v5 h-5" fill="none" stroke="#ffffff" stroke-opacity=".6" stroke-width="1.4"/><animateMotion dur="5.0s" begin="2.6s" repeatCount="indefinite" path="M600.0,584 V464" keyTimes="0;0.42;1" keyPoints="0;1;1" calcMode="linear"/><animate attributeName="opacity" dur="5.0s" begin="2.6s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.38;0.44;1"/></g>
+<g class="pkt" opacity="0"><rect x="-8" y="-10" width="16" height="20" rx="3" fill="#9496EE"/><path d="M-3,-10 v5 h-5" fill="none" stroke="#ffffff" stroke-opacity=".6" stroke-width="1.4"/><animateMotion dur="5.0s" begin="2.6s" repeatCount="indefinite" path="M400,300 C362.0,300 362.0,156.0 324,156.0" keyTimes="0;0.58;1" keyPoints="0;0;1" calcMode="linear"/><animate attributeName="opacity" dur="5.0s" begin="2.6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.56;0.62;0.94;1"/></g>
+<line x1="330" y1="727" x2="370" y2="727" stroke="#3CC2AC" stroke-width="2.5"/><text x="382" y="732" class="legend">available in v0.1</text><line x1="580" y1="727" x2="620" y2="727" stroke="#93A4A6" stroke-width="2" stroke-dasharray="7 7"/><text x="632" y="732" class="legend">on the roadmap</text><text x="800" y="732" class="legend">·  any source → any destination</text>
+</svg>

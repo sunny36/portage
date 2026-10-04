@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generates the README hero diagram in light and dark variants.
+"""Generates the README "How it works" diagram in light and dark variants.
 
-    python3 docs/assets/gen_hero.py
+    python3 docs/assets/gen_how_it_works.py
 
-Writes docs/assets/portage-hero-light.svg and portage-hero-dark.svg. The
+Writes docs/assets/portage-how-it-works-{light,dark}.svg. The
 README picks one with <picture> + prefers-color-scheme (GitHub honours the
 viewer's theme). Animation is CSS-only and disabled under
 prefers-reduced-motion. SVGs shown as <img> can't load web fonts, so text
@@ -298,8 +298,8 @@ Guarantees: newest version always wins, checksum-verified, resumes after a crash
 def main():
     out = Path(__file__).resolve().parent
     for theme in PALETTES:
-        (out / f"portage-hero-{theme}.svg").write_text(render(theme))
-        print("wrote", out / f"portage-hero-{theme}.svg")
+        (out / f"portage-how-it-works-{theme}.svg").write_text(render(theme))
+        print("wrote", out / f"portage-how-it-works-{theme}.svg")
 
 
 if __name__ == "__main__":

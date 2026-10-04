@@ -3,8 +3,8 @@
 **Continuous one-way sync between object stores, across clouds.**
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/portage-hero-dark.svg">
-  <img alt="How Portage works: a new file in Azure Blob Storage is detected from a storage event (or a periodic reconciler scan if the event was lost), copied in parallel resumable parts, verified with SHA-256 and a read-back, and recorded so the newest version always wins. It then appears in OCI Object Storage." src="docs/assets/portage-hero-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/portage-vision-dark.svg">
+  <img alt="Portage sits between object stores and keeps files flowing one way from a source to a destination: Azure Blob Storage, Amazon S3, Google Cloud Storage, OCI Object Storage and on-prem SFTP. Available in v0.1: Azure Blob Storage as a source, Amazon S3 and OCI Object Storage as destinations. Google Cloud Storage, SFTP and any-to-any are on the roadmap." src="docs/assets/portage-vision-light.svg" width="100%">
 </picture>
 
 Portage keeps a destination bucket in step with a source bucket: every new or
@@ -22,6 +22,13 @@ files, lost events are never noticed, an out-of-order copy lets an older
 version overwrite a newer one, and nobody knows how far behind it is.
 Portage keeps a durable record of every file and version, reacts to events in
 seconds, reconciles in the background, and exposes lag as a metric.
+
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/portage-how-it-works-dark.svg">
+  <img alt="A new file lands in Azure Blob Storage. Portage detects it from a storage event, or from a periodic reconciler scan if the event was lost; copies it in parallel, resumable parts; verifies it with SHA-256 and a read-back; and records the synced version so the newest version always wins. The file then appears in OCI Object Storage." src="docs/assets/portage-how-it-works-light.svg" width="100%">
+</picture>
 
 ## Guarantees
 - **Newest version wins.** An older version never overwrites a newer one.
