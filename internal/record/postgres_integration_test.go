@@ -5,6 +5,7 @@ package record_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sort"
 	"sync"
 	"testing"
@@ -66,8 +67,12 @@ func TestMigrateIdempotentAndConcurrent(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM portage_schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Fatalf("applied migrations = %d, want 2", n)
+	files, err := filepath.Glob("migrations/*.sql")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("glob migrations: %v (%d files)", err, len(files))
+	}
+	if n != len(files) {
+		t.Fatalf("applied migrations = %d, want %d (one per file)", n, len(files))
 	}
 }
 

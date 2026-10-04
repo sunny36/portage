@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -105,8 +104,6 @@ func runEngine(ctx context.Context, cancel context.CancelFunc, cfg *config.File,
 	sErr := <-serveErr
 
 	switch {
-	case errors.Is(runErr, pipeline.ErrNotImplemented):
-		return fmt.Errorf("%w: this build of portage cannot sync yet (the pipeline runtime is not implemented)", runErr)
 	case runErr != nil:
 		return runErr
 	case sErr != nil:

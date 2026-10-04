@@ -67,13 +67,17 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 
 // NewClient builds a River client with Portage's defaults. workers and queues
 // may both be nil for an insert-only client.
-func NewClient(pool *pgxpool.Pool, workers *river.Workers, queues map[string]river.QueueConfig) (*river.Client[pgx.Tx], error) {
+//
+// periodic jobs (e.g. scheduled reconciles) run only on the elected leader,
+// so several engine instances never duplicate them.
+func NewClient(pool *pgxpool.Pool, workers *river.Workers, queues map[string]river.QueueConfig, periodic ...*river.PeriodicJob) (*river.Client[pgx.Tx], error) {
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues:      queues,
-		Workers:     workers,
-		JobTimeout:  JobTimeout,
-		MaxAttempts: MaxAttempts,
-		RetryPolicy: &RetryPolicy{Max: MaxRetryBackoff},
+		Queues:       queues,
+		Workers:      workers,
+		PeriodicJobs: periodic,
+		JobTimeout:   JobTimeout,
+		MaxAttempts:  MaxAttempts,
+		RetryPolicy:  &RetryPolicy{Max: MaxRetryBackoff},
 	})
 }
 

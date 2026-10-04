@@ -121,13 +121,17 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 }
 
-func TestRunReportsNotImplemented(t *testing.T) {
-	path := writeConfig(t, strings.Replace(mustRead(t, examplePath), `metrics_addr: ":9090"`, `metrics_addr: "127.0.0.1:0"`, 1))
+func TestRunFailsFastWithoutDatabase(t *testing.T) {
+	// Port 1 is never a Postgres server: run must exit 1 with a clear cause
+	// instead of hanging or starting half an engine.
+	cfg := strings.Replace(mustRead(t, examplePath), `metrics_addr: ":9090"`, `metrics_addr: "127.0.0.1:0"`, 1)
+	cfg = strings.Replace(cfg, "127.0.0.1:25432", "127.0.0.1:1", 1)
+	path := writeConfig(t, cfg)
 	code, _, errOut := runCLI(t, "run", "-c", path, "--log-format", "json")
 	if code != 1 {
 		t.Fatalf("exit %d, want 1", code)
 	}
-	if !strings.Contains(errOut, "not implemented") || !strings.Contains(errOut, `"msg":"starting portage"`) {
+	if !strings.Contains(errOut, "connect to database") || !strings.Contains(errOut, `"msg":"starting portage"`) {
 		t.Errorf("stderr = %s", errOut)
 	}
 }
