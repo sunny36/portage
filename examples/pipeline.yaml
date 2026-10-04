@@ -1,0 +1,56 @@
+# Local dev pipeline: Azurite (Azure Blob emulator) -> SeaweedFS (S3 API).
+# Start the emulators with: docker compose -f deploy/docker-compose.yml up -d
+# ${VAR} references are expanded from the environment.
+version: 1
+database_url: postgres://portage:portage@127.0.0.1:25432/portage?sslmode=disable
+metrics_addr: ":9090"
+
+pipelines:
+  - name: azure-to-s3-local
+    source:
+      prefix: incoming/
+      azure:
+        account_url: http://127.0.0.1:20000/devstoreaccount1
+        container: source
+        auth: connection_string
+        # Azurite's well-known development credentials.
+        connection_string: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:20000/devstoreaccount1;QueueEndpoint=http://127.0.0.1:20001/devstoreaccount1;"
+    destination:
+      prefix: from-azure/
+      s3:
+        bucket: dest
+        region: us-east-1
+        endpoint: http://127.0.0.1:28333
+        path_style: true
+        flavor: generic
+        access_key_id: portage
+        secret_access_key: portage-secret
+    events:
+      # Azurite has no Event Grid, so locally the reconciler finds changes.
+      type: none
+    existing_files: copy
+    concurrency: 8
+    part_size: 8MiB
+    reconcile_interval: 1m
+
+# Real-cloud shape (Azure -> OCI), for reference:
+#
+#  - name: azure-to-oci
+#    source:
+#      azure:
+#        account_url: https://<account>.blob.core.windows.net
+#        container: exports
+#        auth: default            # managed identity / az login
+#    destination:
+#      s3:
+#        bucket: imports
+#        region: eu-frankfurt-1
+#        endpoint: https://<namespace>.compat.objectstorage.eu-frankfurt-1.oraclecloud.com
+#        path_style: true
+#        flavor: oci
+#        access_key_id: ${OCI_S3_ACCESS_KEY_ID}
+#        secret_access_key: ${OCI_S3_SECRET_ACCESS_KEY}
+#    events:
+#      type: azure_queue
+#      queue_account_url: https://<account>.queue.core.windows.net
+#      queue_name: portage-events

@@ -1,0 +1,51 @@
+# Local emulators for development and integration tests.
+#   docker compose -f deploy/docker-compose.yml up -d --wait
+# OCI has no emulator; its S3-compatible API is tested against a real
+# free-tier bucket (see docs/adr/0002).
+name: portage
+
+# Services only talk to the host via published ports, so they use the default
+# bridge instead of creating a compose network (avoids address-pool exhaustion
+# on machines with many docker networks).
+
+services:
+  postgres:
+    network_mode: bridge
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: portage
+      POSTGRES_PASSWORD: portage
+      POSTGRES_DB: portage
+    ports: ["${PORTAGE_PG_PORT:-25432}:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portage"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Azure Blob + Queue emulator.
+  azurite:
+    network_mode: bridge
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --skipApiVersionCheck --loose
+    ports: ["${PORTAGE_AZURITE_BLOB_PORT:-20000}:10000", "${PORTAGE_AZURITE_QUEUE_PORT:-20001}:10001"]
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 10000 && nc -z 127.0.0.1 10001"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # S3-compatible API (stands in for S3 and OCI's S3 compatibility API).
+  # MinIO no longer publishes public images; see docs/adr/0002.
+  seaweedfs:
+    network_mode: bridge
+    image: chrislusf/seaweedfs:latest
+    command: server -s3 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=256 -volume.max=50
+    volumes:
+      - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+    ports: ["${PORTAGE_S3_PORT:-28333}:8333"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 60

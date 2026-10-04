@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "portage",
+      "credentials": [{ "accessKey": "portage", "secretKey": "portage-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}
