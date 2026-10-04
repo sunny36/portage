@@ -126,6 +126,9 @@ func testPutStatRead(t *testing.T, c connector.Connector) {
 	if info.ModTime.IsZero() {
 		t.Errorf("Stat: zero ModTime")
 	}
+	if info.ContentType != "application/octet-stream" {
+		t.Errorf("Stat: ContentType = %q, want the one written", info.ContentType)
+	}
 	if got := info.Metadata[connector.MetaSHA256]; got != sumHex(data) {
 		t.Errorf("metadata %s = %q, want %q", connector.MetaSHA256, got, sumHex(data))
 	}

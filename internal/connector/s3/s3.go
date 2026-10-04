@@ -255,6 +255,7 @@ func (c *Connector) Stat(ctx context.Context, key string) (connector.ObjectInfo,
 		ModTime:  aws.ToTime(out.LastModified),
 		Metadata: md,
 	}
+	info.ContentType = aws.ToString(out.ContentType)
 	if sum, err := hex.DecodeString(md[connector.MetaSHA256]); err == nil && len(sum) == 32 {
 		info.Checksums.SHA256 = sum
 	}

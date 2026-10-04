@@ -173,6 +173,9 @@ func (c *Connector) Stat(ctx context.Context, key string) (connector.ObjectInfo,
 		ModTime:  derefTime(resp.LastModified),
 		Metadata: normMeta(resp.Metadata),
 	}
+	if resp.ContentType != nil {
+		info.ContentType = *resp.ContentType
+	}
 	info.Checksums = checksums(resp.ContentMD5, info.Metadata)
 	return info, nil
 }

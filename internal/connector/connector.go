@@ -65,6 +65,9 @@ type ObjectInfo struct {
 	Sequencer string
 	// Checksums the provider already knows for this version, if any.
 	Checksums Checksums
+	// ContentType is the object's MIME type. Filled by Stat; may be empty
+	// from List.
+	ContentType string
 	// Metadata is user metadata. Portage writes MetaSHA256 on every object it
 	// creates.
 	Metadata map[string]string
