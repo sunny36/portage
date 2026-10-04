@@ -9,9 +9,9 @@ import "time"
 // the source. The worker always Stats the source and copies the *current*
 // version; Version/Sequencer here are hints used for ordering and dedupe.
 type CopyArgs struct {
-	PipelineID string    `json:"pipeline_id"`
-	Key        string    `json:"key"`
-	Version    string    `json:"version,omitempty"`
+	PipelineID string    `json:"pipeline_id" river:"unique"`
+	Key        string    `json:"key" river:"unique"`
+	Version    string    `json:"version,omitempty" river:"unique"`
 	Size       int64     `json:"size,omitempty"`
 	Sequencer  string    `json:"sequencer,omitempty"`
 	EventTime  time.Time `json:"event_time"`
@@ -24,8 +24,8 @@ func (CopyArgs) Kind() string { return "copy" }
 // DeleteArgs propagates a source delete. Only enqueued when the pipeline has
 // deletes enabled (off by default).
 type DeleteArgs struct {
-	PipelineID string    `json:"pipeline_id"`
-	Key        string    `json:"key"`
+	PipelineID string    `json:"pipeline_id" river:"unique"`
+	Key        string    `json:"key" river:"unique"`
 	EventTime  time.Time `json:"event_time"`
 }
 
