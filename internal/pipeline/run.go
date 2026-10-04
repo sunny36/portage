@@ -166,11 +166,11 @@ func openDB(ctx context.Context, cfg *config.File) (*pgxpool.Pool, error) {
 }
 
 func (e *Engine) buildPipeline(ctx context.Context, pc config.Pipeline, mux *http.ServeMux) (*pipelineRuntime, error) {
-	src, err := newConnector(ctx, pc.Source)
+	src, err := connectorFactory(ctx, pc.Source)
 	if err != nil {
 		return nil, fmt.Errorf("source: %w", err)
 	}
-	dst, err := newConnector(ctx, pc.Destination)
+	dst, err := connectorFactory(ctx, pc.Destination)
 	if err != nil {
 		return nil, fmt.Errorf("destination: %w", err)
 	}
@@ -228,6 +228,10 @@ func (e *Engine) buildPipeline(ctx context.Context, pc config.Pipeline, mux *htt
 	}
 	return p, nil
 }
+
+// connectorFactory builds endpoint connectors. Tests in this package swap
+// it to wrap connectors with fault injection.
+var connectorFactory = newConnector
 
 func newConnector(ctx context.Context, ep config.Endpoint) (connector.Connector, error) {
 	switch ep.Provider() {
