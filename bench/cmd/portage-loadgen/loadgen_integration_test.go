@@ -14,8 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azqueue"
 
+	"github.com/sunny36/portage/internal/change/eventgrid"
 	"github.com/sunny36/portage/internal/testenv"
 )
 
@@ -152,5 +155,62 @@ func TestGenerateAzuriteBurstAndRate(t *testing.T) {
 	}
 	if stats.Blobs < 8 || stats.Blobs > 12 {
 		t.Errorf("rate-limited run wrote %d blobs in %v, want ~10", stats.Blobs, time.Since(start))
+	}
+}
+
+func TestGenerateAzuriteEvents(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	name := testenv.UniqueName(t, "loadgen-events")
+	c, err := container.NewClientFromConnectionString(testenv.AzuriteConnectionString(), name, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Create(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = c.Delete(context.Background(), nil) })
+	sink, err := newQueueSink(ctx, testenv.AzuriteConnectionString(), "", name, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = sink.q.Delete(context.Background(), nil) })
+
+	mix, _ := parseMix("1KB:1")
+	var manifest bytes.Buffer
+	const n = 5
+	stats, err := generate(ctx, c, genConfig{
+		Prefix: "ev/", MaxBlobs: n, Concurrency: 2, Seed: 3, Mix: mix, Manifest: &manifest, Events: sink,
+	})
+	if err != nil || stats.Blobs != n || stats.EventErrors != 0 {
+		t.Fatalf("stats %+v, err %v", stats, err)
+	}
+
+	// One message per blob, naming that blob with its committed ETag.
+	resp, err := sink.q.DequeueMessages(ctx, &azqueue.DequeueMessagesOptions{NumberOfMessages: to.Ptr(int32(32))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != n {
+		t.Fatalf("%d messages, want %d", len(resp.Messages), n)
+	}
+	target := eventgrid.Target{PipelineID: "p", Container: name, Prefix: "ev/"}
+	for _, m := range resp.Messages {
+		evs, err := eventgrid.ParseMessage([]byte(*m.MessageText))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ch, ok, skip, err := target.Map(evs[0], time.Now())
+		if err != nil || !ok {
+			t.Fatalf("Map: ok=%v skip=%q err=%v", ok, skip, err)
+		}
+		props, err := c.NewBlobClient("ev/"+ch.Key).GetProperties(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Trim(string(*props.ETag), `"`); got != ch.Version || *props.ContentLength != ch.Size {
+			t.Errorf("%s: event version/size %s/%d, blob %s/%d", ch.Key, ch.Version, ch.Size, got, *props.ContentLength)
+		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,7 +37,10 @@ type genConfig struct {
 	Manifest    io.Writer
 	Progress    time.Duration // progress log interval; 0 = off
 	Logger      *slog.Logger
-	now         func() time.Time
+	// Events, if set, gets a synthetic BlobCreated event per blob written,
+	// after the blob is committed and before it is added to the manifest.
+	Events eventSink
+	now    func() time.Time
 }
 
 // manifestEntry is one JSONL line of the manifest.
@@ -52,6 +56,10 @@ type genStats struct {
 	Blobs  int64
 	Bytes  int64
 	Errors int64
+	// EventErrors counts blobs written whose synthetic event could not be
+	// sent. They are still in the manifest (the blob exists; Portage's
+	// reconciler will find it), but they won't exercise the event path.
+	EventErrors int64
 }
 
 type blobJob struct {
@@ -116,7 +124,7 @@ func generate(ctx context.Context, c *container.Client, cfg genConfig) (genStats
 	for range cfg.Concurrency {
 		wg.Go(func() {
 			for j := range jobs {
-				e, err := uploadOne(ctx, c, cfg, j)
+				e, err := uploadOne(ctx, c, cfg, j, &stats)
 				if err == nil {
 					err = record(e)
 				}
@@ -195,11 +203,11 @@ dispatch:
 
 // uploadOne streams one generated blob, hashing it on the way out. Memory use
 // is bounded by BlockSize*BlockConc regardless of blob size.
-func uploadOne(ctx context.Context, c *container.Client, cfg genConfig, j blobJob) (manifestEntry, error) {
+func uploadOne(ctx context.Context, c *container.Client, cfg genConfig, j blobJob, s *genStats) (manifestEntry, error) {
 	h := sha256.New()
 	cr := &countingReader{r: io.TeeReader(contentReader(cfg.Seed, j.seq, j.size), h)}
 	bb := c.NewBlockBlobClient(j.key)
-	_, err := bb.UploadStream(ctx, cr, &blockblob.UploadStreamOptions{
+	resp, err := bb.UploadStream(ctx, cr, &blockblob.UploadStreamOptions{
 		BlockSize:   cfg.BlockSize,
 		Concurrency: cfg.BlockConc,
 	})
@@ -209,12 +217,41 @@ func uploadOne(ctx context.Context, c *container.Client, cfg genConfig, j blobJo
 	if cr.n != j.size {
 		return manifestEntry{}, fmt.Errorf("short upload: wrote %d of %d bytes", cr.n, j.size)
 	}
-	return manifestEntry{
+	e := manifestEntry{
 		Key:       j.key,
 		Size:      j.size,
 		SHA256:    hex.EncodeToString(h.Sum(nil)),
 		WrittenAt: cfg.now().UTC(),
-	}, nil
+	}
+	if cfg.Events != nil {
+		ev := blobCreated{
+			BlobURL:   blobURL(c.URL(), j.key),
+			Container: containerName(c.URL()),
+			Name:      j.key,
+			Size:      j.size,
+			At:        e.WrittenAt,
+		}
+		if resp.ETag != nil {
+			ev.ETag = string(*resp.ETag)
+		}
+		if err := cfg.Events.BlobCreated(ctx, ev); err != nil {
+			atomic.AddInt64(&s.EventErrors, 1)
+			cfg.Logger.Warn("event not sent; the blob is still recorded", "key", j.key, "err", err)
+		}
+	}
+	return e, nil
+}
+
+// containerName returns the last path segment of a container URL.
+func containerName(containerURL string) string {
+	u := strings.TrimRight(containerURL, "/")
+	if i := strings.LastIndexByte(u, '/'); i >= 0 {
+		u = u[i+1:]
+	}
+	if i := strings.IndexByte(u, '?'); i >= 0 {
+		u = u[:i]
+	}
+	return u
 }
 
 type countingReader struct {

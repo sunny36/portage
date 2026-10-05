@@ -46,6 +46,8 @@ func run(args []string) error {
 		seed        = fs.Uint64("seed", uint64(time.Now().UnixNano()), "seed for sizes and content (reuse to reproduce a run)")
 		manifest    = fs.String("manifest", "loadgen-manifest.jsonl", "JSONL manifest to append to ('-' = stdout)")
 		progress    = fs.Duration("progress", 30*time.Second, "progress log interval (0 = off)")
+		eventQueue  = fs.String("event-queue", "", "also enqueue a synthetic Event Grid BlobCreated message per blob to this Storage Queue (for emulators without Event Grid)")
+		queueURL    = fs.String("queue-account-url", "", "queue service URL for -event-queue when not using a connection string; uses DefaultAzureCredential")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -88,6 +90,15 @@ func run(args []string) error {
 		}
 	}
 
+	var events eventSink
+	if *eventQueue != "" {
+		qs, err := newQueueSink(ctx, *connStr, *queueURL, *eventQueue, *create)
+		if err != nil {
+			return err
+		}
+		events = qs
+	}
+
 	mf, err := openManifest(*manifest)
 	if err != nil {
 		return err
@@ -98,7 +109,7 @@ func run(args []string) error {
 	log.Info("starting",
 		"container", *containerNm, "prefix", *prefix, "seed", *seed,
 		"rate_per_day", rateLabel(rate), "burst", *burstStr,
-		"mean_blob", formatBytes(mix.Mean()), "concurrency", *concurrency)
+		"mean_blob", formatBytes(mix.Mean()), "concurrency", *concurrency, "event_queue", *eventQueue)
 
 	stats, err := generate(ctx, c, genConfig{
 		Prefix:      *prefix,
@@ -114,8 +125,10 @@ func run(args []string) error {
 		Manifest:    mf,
 		Progress:    *progress,
 		Logger:      log,
+		Events:      events,
 	})
-	log.Info("done", "blobs", stats.Blobs, "bytes", formatBytes(float64(stats.Bytes)), "errors", stats.Errors)
+	log.Info("done", "blobs", stats.Blobs, "bytes", formatBytes(float64(stats.Bytes)), "errors", stats.Errors,
+		"event_errors", stats.EventErrors)
 	if errors.Is(err, context.Canceled) && stats.Errors == 0 {
 		return nil // interrupted by the user; manifest is complete for what was written
 	}

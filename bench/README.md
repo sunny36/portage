@@ -51,7 +51,19 @@ log's `rate_per_day` falls below target: raise `-concurrency`.
   `DefaultAzureCredential` (env vars, managed identity, `az login`). Needs the
   *Storage Blob Data Contributor* role on the container.
 
-`-create-container` creates the container if missing.
+`-create-container` creates the container if missing (and the `-event-queue`
+queue, when given).
+
+### Synthetic events (emulators)
+
+Azurite has no Event Grid. `-event-queue NAME` makes the generator also
+enqueue, per blob written, the Storage Queue message Event Grid would deliver
+(`Microsoft.Storage.BlobCreated`, base64 JSON, `eventTime` = commit time), so
+a pipeline with `events.type: azure_queue` exercises its event path and
+reports event-driven sync lag locally. The queue comes from the connection
+string's `QueueEndpoint`, or `-queue-account-url` with
+`DefaultAzureCredential`. Against real Azure leave it off: Event Grid sends
+the real events.
 
 ## Azure → OCI soak
 
@@ -70,10 +82,17 @@ log's `rate_per_day` falls below target: raise `-concurrency`.
 3. Mid-soak, add a burst from a second generator with a different seed and
    prefix (`-burst 2TB -seed 43 -prefix burst/ -concurrency 64`) to check the
    backlog drains and sync lag recovers.
-4. After the load stops and Portage has caught up, verify every manifest line
-   against the destination: the object exists, its size matches, and its
-   `portagesha256` metadata equals the manifest `sha256`. Track sync lag
-   (Portage metrics) over the run.
+4. Sample the engine for the whole run (RSS, goroutines, queue depth, file
+   record / River table growth) with `bench/soak/sample.sh`:
+
+   ```sh
+   METRICS_URL=http://127.0.0.1:9090/metrics PIDFILE=/run/portage.pid \
+   PSQL='psql postgres://…/portage' bench/soak/sample.sh bench/results/raw/samples.csv
+   ```
+
+5. After the load stops and Portage has caught up, verify every manifest line
+   with `portage-verify` (below) and commit its JSON report under
+   `bench/results/`.
 
 Raw results go under `bench/results/raw/` (git-ignored).
 
@@ -87,3 +106,40 @@ bin/portage-loadgen -container source -create-container -prefix incoming/ \
 ```
 
 This feeds the `azure-to-s3-local` pipeline in `examples/pipeline.yaml`.
+
+## portage-verify
+
+Proves "zero missing or mismatched files": for every manifest entry, the
+object exists at the pipeline's destination, its size matches, and the
+SHA-256 of its full content (streamed, not trusted from metadata) equals the
+manifest's.
+
+```sh
+go build -o bin/portage-verify ./bench/cmd/portage-verify
+bin/portage-verify -c pipeline.yaml -pipeline azure-to-oci \
+  -concurrency 32 -retry-missing 10m \
+  -metrics http://127.0.0.1:9090/metrics -metrics-window 60s \
+  -json bench/results/soak-2026-10-07.json \
+  bench/results/raw/soak-42.jsonl bench/results/raw/burst-43.jsonl
+```
+
+- The destination connector is built from the config exactly as the engine
+  builds it. Manifest keys are source-container keys: the pipeline's source
+  prefix is stripped and the destination prefix applied. Keys outside the
+  source prefix or excluded by the pipeline's filters are counted, not
+  checked.
+- A key written more than once counts only at its last write (latest
+  `written_at`; ties go to the entry read last).
+- `-retry-missing` keeps re-checking missing objects while the engine
+  catches up. `-size-only` skips reading content (existence + size, plus the
+  `portagesha256` metadata where present) for a fast first look.
+- `-metrics` adds the engine's view: sync-lag and copy-time p50/p95/p99,
+  files by outcome, events by source, bytes copied and throughput, queue
+  depth and oldest pending. Quantiles come from the histogram buckets,
+  interpolated like PromQL `histogram_quantile`, so they are only as precise
+  as the bucket boundaries; counters restart with the engine process. The
+  report also has exact percentiles of *destination LastModified −
+  written_at* per file (1 s resolution; on S3/OCI a multipart object's
+  LastModified is when its upload started).
+- Exit status: 0 all verified, 1 something missing/mismatched/unreadable,
+  2 usage or setup error.
