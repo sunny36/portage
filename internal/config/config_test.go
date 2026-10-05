@@ -88,3 +88,21 @@ func TestPipelineNames(t *testing.T) {
 		}
 	}
 }
+
+func TestAzureQueueURLOptionalWithConnectionString(t *testing.T) {
+	base := `
+database_url: postgres://x
+pipelines:
+  - name: p1
+    source: {azure: {container: c, auth: connection_string, connection_string: "x"}}
+    destination: {s3: {bucket: b, region: r}}
+    events: {type: azure_queue, queue_name: q}
+`
+	if _, err := Parse([]byte(base)); err != nil {
+		t.Fatalf("connection_string auth without queue_account_url: %v", err)
+	}
+	withDefault := strings.Replace(base, "auth: connection_string, connection_string: \"x\"", "account_url: https://a, auth: default", 1)
+	if _, err := Parse([]byte(withDefault)); err == nil || !strings.Contains(err.Error(), "queue_account_url") {
+		t.Fatalf("default auth without queue_account_url: %v, want error", err)
+	}
+}

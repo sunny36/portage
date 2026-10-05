@@ -331,6 +331,7 @@ func (e *Engine) emit(ctx context.Context, c change.ObjectChanged) error {
 	}
 	return queue.InsertCopy(ctx, e.client, queue.CopyArgs{
 		Generation: gen,
+		Window:     queue.WindowAt(time.Now(), queue.CopyDedupeWindow),
 		PipelineID: c.PipelineID,
 		Key:        c.Key,
 		Version:    c.Version,

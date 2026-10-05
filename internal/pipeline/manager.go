@@ -294,10 +294,14 @@ func withStop(ctx, stop context.Context) (context.Context, context.CancelFunc) {
 // starting immediately (that first run is the initial copy, or catches up
 // after the pipeline was stopped).
 func (e *Engine) periodicReconcile(p *pipelineRuntime) *river.PeriodicJob {
-	args := queue.ReconcileArgs{PipelineID: p.cfg.Name, Revision: p.revision}
 	return river.NewPeriodicJob(
 		river.PeriodicInterval(p.cfg.ReconcileInterval),
 		func() (river.JobArgs, *river.InsertOpts) {
+			args := queue.ReconcileArgs{
+				PipelineID: p.cfg.Name,
+				Revision:   p.revision,
+				Window:     queue.WindowAt(time.Now(), 2*p.cfg.ReconcileInterval),
+			}
 			return args, &river.InsertOpts{
 				Queue: queue.QueueReconcile,
 				// Never stack reconciles for one pipeline. Completed jobs

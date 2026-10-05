@@ -337,8 +337,11 @@ func (p *Pipeline) validate(at string) []error {
 		if p.Source.Provider() != "azure" {
 			add("events.type", "azure_queue requires an azure source")
 		}
-		if p.Events.QueueAccountURL == "" || p.Events.QueueName == "" {
-			add("events", "azure_queue needs queue_account_url and queue_name")
+		// With connection_string auth the queue endpoint comes from the
+		// connection string, so only the queue name is required.
+		if p.Events.QueueName == "" ||
+			(p.Events.QueueAccountURL == "" && (p.Source.Azure == nil || p.Source.Azure.Auth != "connection_string")) {
+			add("events", "azure_queue needs queue_name, and queue_account_url unless the source uses connection_string auth")
 		}
 	case "webhook":
 		if !strings.HasPrefix(p.Events.WebhookPath, "/") {

@@ -143,6 +143,23 @@ func TestInsertDedupeAndRouting(t *testing.T) {
 		t.Fatalf("jobs for running version = %d, want 1", runningDupes)
 	}
 
+	// The same key, version and generation in a later dedupe window is
+	// queued even though the first job is still 'running': a job stranded
+	// before any claim must not block its key indefinitely (soak finding).
+	if err := queue.InsertCopy(ctx, client, queue.CopyArgs{
+		PipelineID: "p1", Key: "big", Version: "block", Window: 1 << 40,
+		EventTime: time.Now(), DetectedAt: time.Now(), Origin: "test",
+	}); err != nil {
+		t.Fatalf("InsertCopy next window: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE args->>'key' = 'big' AND args->>'version' = 'block'`).Scan(&runningDupes); err != nil {
+		t.Fatal(err)
+	}
+	if runningDupes != 2 {
+		t.Fatalf("jobs for running version after the window moved = %d, want 2", runningDupes)
+	}
+
 	if _, err := client.Insert(ctx, queue.ReconcileArgs{PipelineID: "p1"}, &river.InsertOpts{Queue: queue.QueueReconcile}); err != nil {
 		t.Fatal(err)
 	}

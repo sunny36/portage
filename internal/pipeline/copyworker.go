@@ -109,9 +109,9 @@ func (w *CopyWorker) Work(ctx context.Context, job *river.Job[queue.CopyArgs]) e
 			OnUploadStarted: func(ctx context.Context, id string) error {
 				return w.e.store.SetUpload(ctx, p.cfg.Name, args.Key, info.Version, id)
 			},
-			Heartbeat: func(ctx context.Context) error {
+			Heartbeat: leaseKeeper(func(ctx context.Context) error {
 				return w.e.store.ExtendLease(ctx, p.cfg.Name, args.Key, info.Version, leaseDuration)
-			},
+			}, log, time.Now),
 			OnBytes: func(n int64) { w.e.m.BytesUploaded(ctx, p.cfg.Name, n) },
 		})
 	if err != nil {
@@ -244,4 +244,29 @@ func contentType(info connector.ObjectInfo) string {
 		return info.ContentType
 	}
 	return "application/octet-stream"
+}
+
+// leaseKeeper wraps a lease renewal for use as a transfer heartbeat. A lost
+// lease stops the copy at once (someone else owns the key). Any other error
+// (a database blip) is tolerated while the lease is still safely valid, so a
+// multi-gigabyte copy isn't thrown away over one failed renewal; once less
+// than a heartbeat interval of lease remains, the error stops the copy.
+func leaseKeeper(extend func(context.Context) error, log *slog.Logger, now func() time.Time) func(context.Context) error {
+	lastOK := now()
+	return func(ctx context.Context) error {
+		err := extend(ctx)
+		switch {
+		case err == nil:
+			lastOK = now()
+			return nil
+		case errors.Is(err, record.ErrLeaseLost):
+			return err
+		case now().Sub(lastOK) < leaseDuration-heartbeatEvery:
+			log.Warn("lease renewal failed; retrying at the next heartbeat", "err", err,
+				"lease_left", (leaseDuration - now().Sub(lastOK)).Round(time.Second))
+			return nil
+		default:
+			return fmt.Errorf("lease renewal failing for %s: %w", now().Sub(lastOK).Round(time.Second), err)
+		}
+	}
 }

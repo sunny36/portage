@@ -23,9 +23,26 @@ type CopyArgs struct {
 	// can be queued even if the claiming worker died with its job still
 	// 'running' in River.
 	Generation int `json:"generation" river:"unique"`
+	// Window is a coarse time bucket (see CopyWindow) and part of the dedupe
+	// key. A job can be stranded as 'running' before any worker claims the
+	// key (a DB stall between River's fetch and our claim, or a crash there),
+	// leaving Generation unchanged; without a window it would swallow every
+	// re-queue of that key until River's stuck-job rescue hours later. With
+	// it, repeats still collapse within a window, and a stranded job blocks
+	// the key for at most one window. Extra jobs are harmless: the file
+	// record's claim answers busy or already-synced.
+	Window int64 `json:"window" river:"unique"`
 }
 
 func (CopyArgs) Kind() string { return "copy" }
+
+// CopyDedupeWindow bounds how long a stranded copy job can block its key.
+const CopyDedupeWindow = 5 * time.Minute
+
+// WindowAt returns the dedupe bucket containing t for a window length.
+func WindowAt(t time.Time, window time.Duration) int64 {
+	return t.Unix() / int64(window/time.Second)
+}
 
 // DeleteArgs propagates a source delete. Only enqueued when the pipeline has
 // deletes enabled (off by default).
@@ -45,6 +62,11 @@ type ReconcileArgs struct {
 	// a restarted pipeline's first reconcile is not swallowed by the
 	// previous instance's run that is still being finalised.
 	Revision int64 `json:"revision,omitempty"`
+	// Window (a bucket of twice the reconcile interval) is part of the
+	// dedupe key for the same reason as CopyArgs.Window: a reconcile job
+	// stranded as 'running' must not suppress reconciles for hours. At most
+	// two reconciles of one pipeline can overlap, which is harmless.
+	Window int64 `json:"window,omitempty"`
 }
 
 func (ReconcileArgs) Kind() string { return "reconcile" }
