@@ -91,14 +91,19 @@ func NewClient(pool *pgxpool.Pool, workers *river.Workers, queues map[string]riv
 func QueuesFor(pipelines []config.Pipeline) map[string]river.QueueConfig {
 	q := make(map[string]river.QueueConfig, len(pipelines)+1)
 	for _, p := range pipelines {
-		n := p.Concurrency
-		if n < 1 {
-			n = defaultConcurrency
-		}
-		q[CopyQueue(p.Name)] = river.QueueConfig{MaxWorkers: n}
+		q[CopyQueue(p.Name)] = CopyQueueConfig(p)
 	}
 	q[QueueReconcile] = river.QueueConfig{MaxWorkers: max(1, len(pipelines))}
 	return q
+}
+
+// CopyQueueConfig sizes a pipeline's copy queue by its Concurrency.
+func CopyQueueConfig(p config.Pipeline) river.QueueConfig {
+	n := p.Concurrency
+	if n < 1 {
+		n = defaultConcurrency
+	}
+	return river.QueueConfig{MaxWorkers: n}
 }
 
 // RetryPolicy is exponential backoff (1s, 2s, 4s, …) with ±10% jitter,

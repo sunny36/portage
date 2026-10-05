@@ -38,11 +38,14 @@ func (w *CopyWorker) Timeout(*river.Job[queue.CopyArgs]) time.Duration { return 
 
 func (w *CopyWorker) Work(ctx context.Context, job *river.Job[queue.CopyArgs]) error {
 	args := job.Args
-	p, ok := w.e.pipelines[args.PipelineID]
-	if !ok {
-		// Pipeline removed from config; nothing to do.
-		return river.JobCancel(fmt.Errorf("unknown pipeline %q", args.PipelineID))
+	p, err := w.e.runtimeFor(args.PipelineID)
+	if err != nil {
+		return err
 	}
+	// Stopping the pipeline (changed, disabled, deleted) cancels the copy
+	// once it had shutdownTimeout to finish; it then releases its lease.
+	ctx, done := withStop(ctx, p.workCtx)
+	defer done()
 	log := w.e.log.With("pipeline", args.PipelineID, "key", args.Key, "attempt", job.Attempt)
 	start := time.Now()
 
@@ -195,10 +198,12 @@ type DeleteWorker struct {
 
 func (w *DeleteWorker) Work(ctx context.Context, job *river.Job[queue.DeleteArgs]) error {
 	args := job.Args
-	p, ok := w.e.pipelines[args.PipelineID]
-	if !ok {
-		return river.JobCancel(fmt.Errorf("unknown pipeline %q", args.PipelineID))
+	p, err := w.e.runtimeFor(args.PipelineID)
+	if err != nil {
+		return err
 	}
+	ctx, done := withStop(ctx, p.workCtx)
+	defer done()
 	// Confirm it's really gone: an event can arrive after a re-create.
 	if _, err := p.src.Stat(ctx, args.Key); err == nil {
 		return nil

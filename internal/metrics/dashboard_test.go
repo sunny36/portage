@@ -30,6 +30,7 @@ func exposedSeriesNames(t *testing.T) map[string]bool {
 	m.EventReceived(ctx, "p", "webhook", "created")
 	m.Retry(ctx, "p", "op", "throttled")
 	m.ReconcileFinished(ctx, "p", 1, 1, 1, time.Second, errors.New("x"))
+	m.PipelineConfigError(ctx, "p")
 	_ = m.RegisterQueueDepth(func(context.Context) (map[string]int64, error) { return map[string]int64{"p": 1}, nil })
 	_ = m.RegisterOldestPending(func(context.Context) (map[string]time.Duration, error) {
 		return map[string]time.Duration{"p": time.Second}, nil

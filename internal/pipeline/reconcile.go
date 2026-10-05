@@ -7,9 +7,7 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
-	"github.com/sunny36/portage/internal/config"
 	"github.com/sunny36/portage/internal/queue"
 	"github.com/sunny36/portage/internal/reconcile"
 )
@@ -27,10 +25,14 @@ func (w *ReconcileWorker) Timeout(*river.Job[queue.ReconcileArgs]) time.Duration
 }
 
 func (w *ReconcileWorker) Work(ctx context.Context, job *river.Job[queue.ReconcileArgs]) error {
-	p, ok := w.e.pipelines[job.Args.PipelineID]
-	if !ok {
-		return river.JobCancel(fmt.Errorf("unknown pipeline %q", job.Args.PipelineID))
+	p, err := w.e.runtimeFor(job.Args.PipelineID)
+	if err != nil {
+		return err
 	}
+	// A stopping pipeline (changed, disabled, deleted, engine shutdown)
+	// abandons its listing; the next instance reconciles on start.
+	ctx, done := withStop(ctx, p.runCtx)
+	defer done()
 	log := w.e.log.With("pipeline", p.cfg.Name)
 	st, err := reconcile.Run(ctx, reconcile.Options{
 		PipelineID:   p.cfg.Name,
@@ -42,6 +44,9 @@ func (w *ReconcileWorker) Work(ctx context.Context, job *river.Job[queue.Reconci
 		Log:          w.e.log, // reconcile adds the pipeline attribute itself
 	})
 	w.e.m.ReconcileFinished(ctx, p.cfg.Name, st.Listed, st.Emitted, st.Deleted, st.Duration, err)
+	if p.runCtx.Err() != nil {
+		return river.JobCancel(fmt.Errorf("pipeline %s stopped during reconcile: %w", p.cfg.Name, context.Cause(p.runCtx)))
+	}
 	if errors.Is(err, reconcile.ErrEmptySource) || errors.Is(err, reconcile.ErrMassDelete) {
 		// Likely a wrong prefix or revoked access. Don't retry in a loop;
 		// the next scheduled run tries again.
@@ -54,29 +59,4 @@ func (w *ReconcileWorker) Work(ctx context.Context, job *river.Job[queue.Reconci
 	log.Info("reconcile finished", "listed", st.Listed, "emitted", st.Emitted, "deleted", st.Deleted,
 		"in_flight", st.InFlight, "ignored", st.Ignored, "took", st.Duration.Round(time.Millisecond))
 	return nil
-}
-
-// periodicReconciles schedules a reconcile per pipeline at its interval,
-// starting immediately (that first run is the initial copy).
-func (e *Engine) periodicReconciles(cfg *config.File) []*river.PeriodicJob {
-	jobs := make([]*river.PeriodicJob, 0, len(cfg.Pipelines))
-	for _, p := range cfg.Pipelines {
-		name := p.Name
-		jobs = append(jobs, river.NewPeriodicJob(
-			river.PeriodicInterval(p.ReconcileInterval),
-			func() (river.JobArgs, *river.InsertOpts) {
-				return queue.ReconcileArgs{PipelineID: name}, &river.InsertOpts{
-					Queue: queue.QueueReconcile,
-					// Never stack reconciles for one pipeline. Completed jobs
-					// must not count, or every later run would be deduped away.
-					UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
-						rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
-						rivertype.JobStateRetryable, rivertype.JobStateScheduled,
-					}},
-				}
-			},
-			&river.PeriodicJobOpts{RunOnStart: true},
-		))
-	}
-	return jobs
 }

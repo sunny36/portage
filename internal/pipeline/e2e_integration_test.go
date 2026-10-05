@@ -262,6 +262,15 @@ func newContainer(t *testing.T) string {
 
 func newBucket(t *testing.T) string {
 	t.Helper()
+	name := testenv.UniqueName(t, "e2e-dst")
+	newBucketNamed(t, name)
+	return name
+}
+
+// newBucketNamed creates bucket name and deletes it (and its objects) on
+// cleanup.
+func newBucketNamed(t *testing.T, name string) {
+	t.Helper()
 	ctx := context.Background()
 	ac, err := awscfg.LoadDefaultConfig(ctx, awscfg.WithRegion(testenv.S3Region),
 		awscfg.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(testenv.S3AccessKeyID, testenv.S3SecretAccessKey, "")))
@@ -272,7 +281,6 @@ func newBucket(t *testing.T) string {
 		o.BaseEndpoint = aws.String(testenv.S3Endpoint())
 		o.UsePathStyle = true
 	})
-	name := testenv.UniqueName(t, "e2e-dst")
 	if _, err := cl.CreateBucket(ctx, &s3sdk.CreateBucketInput{Bucket: aws.String(name)}); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +293,6 @@ func newBucket(t *testing.T) string {
 		}
 		_, _ = cl.DeleteBucket(context.Background(), &s3sdk.DeleteBucketInput{Bucket: aws.String(name)})
 	})
-	return name
 }
 
 func newEventQueue(t *testing.T) string {

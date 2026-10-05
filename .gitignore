@@ -9,3 +9,4 @@ coverage.*
 /.claude/
 __pycache__/
 *.pyc
+/portage

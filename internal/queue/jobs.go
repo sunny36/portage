@@ -40,6 +40,11 @@ func (DeleteArgs) Kind() string { return "delete" }
 // ReconcileArgs runs one listing diff for a pipeline.
 type ReconcileArgs struct {
 	PipelineID string `json:"pipeline_id"`
+	// Revision is the pipeline_spec revision that scheduled the run (0 for
+	// pipelines from the config file). Reconciles dedupe on their args, so
+	// a restarted pipeline's first reconcile is not swallowed by the
+	// previous instance's run that is still being finalised.
+	Revision int64 `json:"revision,omitempty"`
 }
 
 func (ReconcileArgs) Kind() string { return "reconcile" }

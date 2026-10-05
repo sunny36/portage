@@ -26,6 +26,7 @@ import (
 	"github.com/sunny36/portage/internal/connector"
 	"github.com/sunny36/portage/internal/connector/azure"
 	"github.com/sunny36/portage/internal/connector/s3"
+	"github.com/sunny36/portage/internal/metrics"
 	"github.com/sunny36/portage/internal/record"
 	"github.com/sunny36/portage/internal/testenv"
 )
@@ -235,11 +236,17 @@ type engine struct {
 // start runs the engine in the background. Cleanup cancels it and waits.
 func (h *harness) start(cfg *config.File) *engine {
 	h.t.Helper()
+	return h.startWithMetrics(cfg, nil)
+}
+
+// startWithMetrics is start with a metrics sink (nil for none).
+func (h *harness) startWithMetrics(cfg *config.File, m *metrics.Metrics) *engine {
+	h.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &engine{t: h.t, cancel: cancel, exited: make(chan struct{})}
 	log := slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	go func() {
-		e.err = Run(ctx, cfg, nil, log)
+		e.err = Run(ctx, cfg, m, log)
 		close(e.exited)
 	}()
 	h.t.Cleanup(func() { e.wait(false) })

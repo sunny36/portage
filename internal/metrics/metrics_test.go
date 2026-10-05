@@ -99,6 +99,8 @@ func TestMetricsScrape(t *testing.T) {
 	m.Retry(ctx, "p1", "upload_part", "throttled")
 	m.ReconcileFinished(ctx, "p1", 100, 7, 2, 30*time.Second, nil)
 	m.ReconcileFinished(ctx, "p1", 10, 0, 0, time.Second, errors.New("boom"))
+	m.PipelineConfigError(ctx, "p2")
+	m.PipelineConfigError(ctx, "p2")
 	if err := m.RegisterQueueDepth(func(context.Context) (map[string]int64, error) {
 		return map[string]int64{"p1": 12, "p2": 0}, nil
 	}); err != nil {
@@ -158,6 +160,7 @@ func TestMetricsScrape(t *testing.T) {
 		{NameReconcileListed, map[string]string{"pipeline": "p1"}, 110},
 		{NameReconcileEmitted, map[string]string{"pipeline": "p1"}, 7},
 		{NameReconcileDeletes, map[string]string{"pipeline": "p1"}, 2},
+		{NamePipelineConfigErrors, map[string]string{"pipeline": "p2"}, 2},
 	}
 	for _, c := range checks {
 		if got := counterValue(t, fams, c.name, c.labels); got != c.want {
@@ -226,6 +229,7 @@ func TestNilMetricsIsNoop(t *testing.T) {
 	m.EventReceived(ctx, "p", "s", "k")
 	m.ReconcileFinished(ctx, "p", 1, 1, 1, time.Second, nil)
 	m.Retry(ctx, "p", "op", "other")
+	m.PipelineConfigError(ctx, "p")
 	if err := m.RegisterQueueDepth(func(context.Context) (map[string]int64, error) { return nil, nil }); err != nil {
 		t.Error(err)
 	}

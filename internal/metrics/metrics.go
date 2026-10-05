@@ -41,6 +41,7 @@ const (
 	NameReconcileDuration    = "portage_reconcile_duration_seconds"
 	NameQueueDepth           = "portage_queue_depth"
 	NameOldestPendingSeconds = "portage_oldest_pending_seconds"
+	NamePipelineConfigErrors = "portage_pipeline_config_errors"
 )
 
 // Names lists every metric this package emits; histograms additionally
@@ -50,7 +51,7 @@ var Names = []string{
 	NameSyncLagSeconds, NameCopyDurationSeconds, NameEventsTotal,
 	NameRetriesTotal, NameReconcileRunsTotal, NameReconcileListed,
 	NameReconcileEmitted, NameReconcileDeletes, NameReconcileDuration,
-	NameQueueDepth, NameOldestPendingSeconds,
+	NameQueueDepth, NameOldestPendingSeconds, NamePipelineConfigErrors,
 }
 
 // Histograms lists the members of Names that are histograms.
@@ -99,6 +100,8 @@ type Metrics struct {
 	reconcileEmitted  metric.Int64Counter
 	reconcileDeletes  metric.Int64Counter
 	reconcileDuration metric.Float64Histogram
+
+	configErrors metric.Int64Counter
 
 	mu         sync.Mutex
 	registered map[string]bool
@@ -158,6 +161,7 @@ func (m *Metrics) init() error {
 	m.reconcileEmitted = counter(NameReconcileEmitted, "{object}", "Copies the reconciler enqueued because the destination was missing or behind.")
 	m.reconcileDeletes = counter(NameReconcileDeletes, "{object}", "Source deletes detected by the reconciler.")
 	m.reconcileDuration = hist(NameReconcileDuration, "Wall time of one reconcile pass.", reconcileBuckets)
+	m.configErrors = counter(NamePipelineConfigErrors, "{error}", "Pipelines that could not be (re)started: invalid spec, unresolvable secret or failed start check. Retried on the next refresh.")
 	return errors.Join(errs...)
 }
 
@@ -236,6 +240,15 @@ func (m *Metrics) ReconcileFinished(ctx context.Context, pipeline string, listed
 		m.reconcileDeletes.Add(ctx, deletes, set)
 	}
 	m.reconcileDuration.Record(ctx, dur.Seconds(), set)
+}
+
+// PipelineConfigError counts one failed attempt to start a pipeline from its
+// config (invalid spec, unresolvable secret, failed start check).
+func (m *Metrics) PipelineConfigError(ctx context.Context, pipeline string) {
+	if m == nil {
+		return
+	}
+	m.configErrors.Add(ctx, 1, metric.WithAttributes(pipelineAttr(pipeline)))
 }
 
 // Retry counts one retried operation. op is e.g. "upload_part", "stat";

@@ -1,9 +1,12 @@
-// Package config loads and validates pipeline.yaml.
+// Package config loads and validates pipeline.yaml, and pipeline specs
+// stored in the database (docs/adr/0004-pipelines-from-database.md).
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -20,9 +23,22 @@ type File struct {
 	// MetricsAddr serves Prometheus /metrics and /healthz, e.g. ":9090".
 	MetricsAddr string `yaml:"metrics_addr"`
 	// WebhookAddr serves Event Grid webhooks when any source uses them.
-	WebhookAddr string     `yaml:"webhook_addr"`
-	Pipelines   []Pipeline `yaml:"pipelines"`
+	WebhookAddr string `yaml:"webhook_addr"`
+	// PipelinesFrom is where pipelines come from: "file" (default: the
+	// pipelines list below) or "database" (the pipeline_spec table).
+	PipelinesFrom string     `yaml:"pipelines_from"`
+	Pipelines     []Pipeline `yaml:"pipelines"`
 }
+
+// PipelinesFrom values.
+const (
+	PipelinesFromFile     = "file"
+	PipelinesFromDatabase = "database"
+)
+
+// FromDatabase reports whether pipelines are read from the pipeline_spec
+// table instead of this file.
+func (f *File) FromDatabase() bool { return f.PipelinesFrom == PipelinesFromDatabase }
 
 // Pipeline is one continuous one-way sync.
 type Pipeline struct {
@@ -126,7 +142,14 @@ type Filters struct {
 // doubled hyphens). Length is checked separately.
 var nameRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-// Load reads path, expands ${ENV} references, applies defaults and validates.
+// ValidName reports whether name is a valid pipeline name: 2-40 chars of
+// lowercase letters, digits and single hyphens.
+func ValidName(name string) bool {
+	return nameRE.MatchString(name) && len(name) >= 2 && len(name) <= 40
+}
+
+// Load reads path, expands ${ENV} references, resolves secret://
+// references, applies defaults and validates.
 func Load(path string) (*File, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -144,11 +167,55 @@ func Parse(raw []byte) (*File, error) {
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("parse pipeline config: %w", err)
 	}
+	var errs []error
+	for i := range f.Pipelines {
+		errs = append(errs, resolveSecrets(&f.Pipelines[i], fmt.Sprintf("pipelines[%d]", i), ResolveSecret)...)
+	}
 	f.applyDefaults()
-	if err := f.Validate(); err != nil {
+	errs = append(errs, f.Validate())
+	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
 	return &f, nil
+}
+
+// ParsePipelineSpec parses the spec of one pipeline_spec row: an object
+// with the fields of a pipelines[] entry in pipeline.yaml, as JSON (JSON is
+// YAML, so the same decoder and field names apply). Unknown fields are
+// rejected; the name comes from the row (a name inside spec is ignored);
+// secret:// references are resolved; the file's defaults and validation
+// apply. ${ENV} references are not expanded. Errors name fields, never
+// secret values.
+func ParsePipelineSpec(name string, spec []byte) (Pipeline, error) {
+	return parsePipelineSpec(name, spec, ResolveSecret)
+}
+
+// CheckPipelineSpec is ParsePipelineSpec without resolving secrets: each
+// secret:// reference must be well formed and is replaced by a placeholder.
+// For tools that write specs on a machine that does not hold the engine's
+// secrets (`portage pipelines apply`).
+func CheckPipelineSpec(name string, spec []byte) (Pipeline, error) {
+	return parsePipelineSpec(name, spec, placeholderSecret)
+}
+
+func parsePipelineSpec(name string, spec []byte, resolve func(string) (string, error)) (Pipeline, error) {
+	var p Pipeline
+	dec := yaml.NewDecoder(bytes.NewReader(spec))
+	dec.KnownFields(true)
+	if err := dec.Decode(&p); err != nil {
+		if errors.Is(err, io.EOF) {
+			return Pipeline{}, errors.New("parse pipeline spec: empty")
+		}
+		return Pipeline{}, fmt.Errorf("parse pipeline spec: %w", err)
+	}
+	p.Name = name
+	errs := resolveSecrets(&p, "", resolve)
+	p.applyDefaults()
+	errs = append(errs, p.validate("")...)
+	if err := errors.Join(errs...); err != nil {
+		return Pipeline{}, err
+	}
+	return p, nil
 }
 
 func (f *File) applyDefaults() {
@@ -161,45 +228,53 @@ func (f *File) applyDefaults() {
 	if f.WebhookAddr == "" {
 		f.WebhookAddr = ":8080"
 	}
+	if f.PipelinesFrom == "" {
+		f.PipelinesFrom = PipelinesFromFile
+	}
 	for i := range f.Pipelines {
-		p := &f.Pipelines[i]
-		if p.ExistingFiles == "" {
-			p.ExistingFiles = "copy"
+		f.Pipelines[i].applyDefaults()
+	}
+}
+
+// applyDefaults fills unset pipeline fields; shared by the file and
+// pipeline_spec rows.
+func (p *Pipeline) applyDefaults() {
+	if p.ExistingFiles == "" {
+		p.ExistingFiles = "copy"
+	}
+	if p.Concurrency == 0 {
+		p.Concurrency = 16
+	}
+	if p.PartConcurrency == 0 {
+		p.PartConcurrency = 4
+	}
+	if p.PartSize == 0 {
+		p.PartSize = 64 << 20
+	}
+	if p.ReconcileInterval == 0 {
+		p.ReconcileInterval = 15 * time.Minute
+	}
+	if p.Events.Type == "" {
+		if p.Source.Provider() == "azure" {
+			p.Events.Type = "azure_queue"
+		} else {
+			p.Events.Type = "none"
 		}
-		if p.Concurrency == 0 {
-			p.Concurrency = 16
+	}
+	if p.Events.Type == "webhook" && p.Events.WebhookPath == "" {
+		p.Events.WebhookPath = "/events/" + p.Name
+	}
+	for _, e := range []*Endpoint{&p.Source, &p.Destination} {
+		// A prefix is a folder: "exports" must not also match "exportsX/".
+		e.Prefix = strings.TrimLeft(e.Prefix, "/")
+		if e.Prefix != "" && !strings.HasSuffix(e.Prefix, "/") {
+			e.Prefix += "/"
 		}
-		if p.PartConcurrency == 0 {
-			p.PartConcurrency = 4
+		if e.Azure != nil && e.Azure.Auth == "" {
+			e.Azure.Auth = "default"
 		}
-		if p.PartSize == 0 {
-			p.PartSize = 64 << 20
-		}
-		if p.ReconcileInterval == 0 {
-			p.ReconcileInterval = 15 * time.Minute
-		}
-		if p.Events.Type == "" {
-			if p.Source.Provider() == "azure" {
-				p.Events.Type = "azure_queue"
-			} else {
-				p.Events.Type = "none"
-			}
-		}
-		if p.Events.Type == "webhook" && p.Events.WebhookPath == "" {
-			p.Events.WebhookPath = "/events/" + p.Name
-		}
-		for _, e := range []*Endpoint{&p.Source, &p.Destination} {
-			// A prefix is a folder: "exports" must not also match "exportsX/".
-			e.Prefix = strings.TrimLeft(e.Prefix, "/")
-			if e.Prefix != "" && !strings.HasSuffix(e.Prefix, "/") {
-				e.Prefix += "/"
-			}
-			if e.Azure != nil && e.Azure.Auth == "" {
-				e.Azure.Auth = "default"
-			}
-			if e.S3 != nil && e.S3.Flavor == "" {
-				e.S3.Flavor = "aws"
-			}
+		if e.S3 != nil && e.S3.Flavor == "" {
+			e.S3.Flavor = "aws"
 		}
 	}
 }
@@ -215,56 +290,87 @@ func (f *File) Validate() error {
 	if f.DatabaseURL == "" {
 		add("database_url: required")
 	}
-	if len(f.Pipelines) == 0 {
-		add("pipelines: at least one required")
+	switch f.PipelinesFrom {
+	case "", PipelinesFromFile:
+		if len(f.Pipelines) == 0 {
+			add("pipelines: at least one required")
+		}
+	case PipelinesFromDatabase:
+		if len(f.Pipelines) > 0 {
+			add("pipelines: must be empty with pipelines_from: database (pipelines live in the pipeline_spec table)")
+		}
+	default:
+		add("pipelines_from: %q must be file or database", f.PipelinesFrom)
 	}
 	seen := map[string]bool{}
 	for i, p := range f.Pipelines {
 		at := fmt.Sprintf("pipelines[%d]", i)
-		if !nameRE.MatchString(p.Name) || len(p.Name) < 2 || len(p.Name) > 40 {
-			add("%s.name: %q must be 2-40 chars of lowercase letters, digits and single hyphens", at, p.Name)
-		}
 		if seen[p.Name] {
 			add("%s.name: duplicate %q", at, p.Name)
 		}
 		seen[p.Name] = true
-		errs = append(errs, validateEndpoint(at+".source", p.Source)...)
-		errs = append(errs, validateEndpoint(at+".destination", p.Destination)...)
-		switch p.ExistingFiles {
-		case "copy", "skip":
-		default:
-			add("%s.existing_files: %q must be copy or skip", at, p.ExistingFiles)
-		}
-		switch p.Events.Type {
-		case "none":
-		case "azure_queue":
-			if p.Source.Provider() != "azure" {
-				add("%s.events.type: azure_queue requires an azure source", at)
-			}
-			if p.Events.QueueAccountURL == "" || p.Events.QueueName == "" {
-				add("%s.events: azure_queue needs queue_account_url and queue_name", at)
-			}
-		case "webhook":
-			if !strings.HasPrefix(p.Events.WebhookPath, "/") {
-				add("%s.events.webhook_path: must start with /", at)
-			}
-			if len(p.Events.WebhookSecret) < 16 {
-				add("%s.events.webhook_secret: required, at least 16 characters", at)
-			}
-		default:
-			add("%s.events.type: %q must be azure_queue, webhook or none", at, p.Events.Type)
-		}
-		if p.Concurrency < 1 || p.PartConcurrency < 1 {
-			add("%s: concurrency and part_concurrency must be >= 1", at)
-		}
-		if p.PartSize < 5<<20 {
-			add("%s.part_size: must be at least 5MiB", at)
-		}
-		if p.ReconcileInterval < time.Minute {
-			add("%s.reconcile_interval: must be at least 1m", at)
-		}
+		errs = append(errs, p.validate(at)...)
 	}
 	return errors.Join(errs...)
+}
+
+// validate checks one pipeline with defaults applied. at prefixes field
+// paths ("pipelines[0]"); it is empty for a pipeline_spec row.
+func (p *Pipeline) validate(at string) []error {
+	var errs []error
+	add := func(field, format string, a ...any) {
+		errs = append(errs, fmt.Errorf("%s: %s", joinPath(at, field), fmt.Sprintf(format, a...)))
+	}
+	if !ValidName(p.Name) {
+		add("name", "%q must be 2-40 chars of lowercase letters, digits and single hyphens", p.Name)
+	}
+	errs = append(errs, validateEndpoint(joinPath(at, "source"), p.Source)...)
+	errs = append(errs, validateEndpoint(joinPath(at, "destination"), p.Destination)...)
+	switch p.ExistingFiles {
+	case "copy", "skip":
+	default:
+		add("existing_files", "%q must be copy or skip", p.ExistingFiles)
+	}
+	switch p.Events.Type {
+	case "none":
+	case "azure_queue":
+		if p.Source.Provider() != "azure" {
+			add("events.type", "azure_queue requires an azure source")
+		}
+		if p.Events.QueueAccountURL == "" || p.Events.QueueName == "" {
+			add("events", "azure_queue needs queue_account_url and queue_name")
+		}
+	case "webhook":
+		if !strings.HasPrefix(p.Events.WebhookPath, "/") {
+			add("events.webhook_path", "must start with /")
+		}
+		if len(p.Events.WebhookSecret) < 16 {
+			add("events.webhook_secret", "required, at least 16 characters")
+		}
+	default:
+		add("events.type", "%q must be azure_queue, webhook or none", p.Events.Type)
+	}
+	if p.Concurrency < 1 || p.PartConcurrency < 1 {
+		add("concurrency", "concurrency and part_concurrency must be >= 1")
+	}
+	if p.PartSize < 5<<20 {
+		add("part_size", "must be at least 5MiB")
+	}
+	if p.ReconcileInterval < time.Minute {
+		add("reconcile_interval", "must be at least 1m")
+	}
+	return errs
+}
+
+// joinPath joins field path segments, skipping empty ones.
+func joinPath(at, field string) string {
+	switch {
+	case at == "":
+		return field
+	case field == "":
+		return at
+	}
+	return at + "." + field
 }
 
 func validateEndpoint(at string, e Endpoint) []error {

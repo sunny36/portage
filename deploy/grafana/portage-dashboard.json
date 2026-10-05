@@ -707,6 +707,54 @@
           }
         }
       ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Pipeline config errors",
+      "description": "Failed attempts to (re)start a pipeline: invalid spec, unresolvable secret or failed start check. Each is retried on the next refresh; the engine log has the reason.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (pipeline) (increase(portage_pipeline_config_errors{pipeline=~\"$pipeline\"}[$__rate_interval]))",
+          "legendFormat": "{{pipeline}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ]
     }
   ]
 }

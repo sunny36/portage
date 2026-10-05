@@ -8,24 +8,30 @@
 // Every step is idempotent: events are at-least-once, jobs dedupe on
 // (pipeline, key, version), and the file record decides whether a copy is
 // still needed.
+//
+// Pipelines can be added, replaced and removed while the engine runs
+// (manager.go): from the config file they are started once; from the
+// pipeline_spec table (pipelines_from: database) a watcher applies changes
+// as they happen (watch.go).
 package pipeline
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/sunny36/portage/internal/change"
-	"github.com/sunny36/portage/internal/change/azqueue"
-	"github.com/sunny36/portage/internal/change/webhook"
 	"github.com/sunny36/portage/internal/config"
 	"github.com/sunny36/portage/internal/connector"
 	"github.com/sunny36/portage/internal/connector/azure"
@@ -43,32 +49,56 @@ const (
 	// sourceRestartBackoff is how long a failed change source waits before
 	// restarting. The reconciler keeps the pipeline syncing meanwhile.
 	sourceRestartBackoff = time.Minute
-	shutdownTimeout      = 30 * time.Second
+	// shutdownTimeout is how long running copies get to finish when the
+	// engine or one pipeline stops, before they are cancelled (and release
+	// their lease, keeping their upload session for the next start).
+	shutdownTimeout = 30 * time.Second
+	// dbReconcileWorkers sizes the shared reconcile queue with pipelines
+	// from the database, whose number changes at runtime.
+	dbReconcileWorkers = 16
+	// dbMaxConns is the connection pool size with pipelines from the
+	// database (with a file it is sized from the pipelines' concurrency).
+	dbMaxConns = 64
 )
 
 // Engine holds what workers share. One per process.
 type Engine struct {
-	store     record.Store
+	store  record.Store
+	pool   *transfer.BufferPool
+	db     *pgxpool.Pool
+	client *river.Client[pgx.Tx]
+	m      *metrics.Metrics
+	log    *slog.Logger
+
+	// ctx is the parent of every pipeline's run context; cancelled when the
+	// engine shuts down.
+	ctx context.Context
+	// wg tracks change sources, the spec watcher and the webhook server.
+	wg sync.WaitGroup
+	// fatal receives an error that must stop the engine (webhook listener).
+	fatal chan error
+
+	webhookAddr string
+	hooks       webhookRouter
+	hookServer  sync.Once
+
+	mu sync.RWMutex
+	// pipelines are the running pipelines by name.
 	pipelines map[string]*pipelineRuntime
-	pool      *transfer.BufferPool
-	db        *pgxpool.Pool
-	client    *river.Client[pgx.Tx]
-	m         *metrics.Metrics
-	log       *slog.Logger
+	// wanted are the pipelines that are configured and enabled, running or
+	// not (being restarted, or failing their start checks). Jobs for other
+	// pipelines are cancelled.
+	wanted map[string]bool
 }
 
-type pipelineRuntime struct {
-	cfg    config.Pipeline
-	src    connector.Connector
-	dst    connector.Connector
-	filter *change.Filter
-	source change.Source // nil when events.type is none
-	// ignoreBefore implements existing_files: skip.
-	ignoreBefore time.Time
-}
-
-// Run starts every pipeline in cfg and blocks until ctx is cancelled (clean
-// shutdown, returns nil) or a fatal error occurs. m may be nil.
+// Run starts the pipelines (from cfg, or from the pipeline_spec table when
+// cfg.FromDatabase()) and blocks until ctx is cancelled (clean shutdown,
+// returns nil) or a fatal error occurs. m may be nil.
+//
+// With pipelines from the file, a pipeline that fails its start checks
+// stops Run with an error. With pipelines from the database, it is logged,
+// counted in portage_pipeline_config_errors and retried on the next refresh;
+// it never affects other pipelines.
 func Run(ctx context.Context, cfg *config.File, m *metrics.Metrics, log *slog.Logger) error {
 	db, err := openDB(ctx, cfg)
 	if err != nil {
@@ -83,29 +113,29 @@ func Run(ctx context.Context, cfg *config.File, m *metrics.Metrics, log *slog.Lo
 	}
 
 	e := &Engine{
-		store:     record.NewPGStore(db),
-		pipelines: map[string]*pipelineRuntime{},
-		db:        db,
-		m:         m,
-		log:       log,
+		store:       record.NewPGStore(db),
+		pool:        transfer.NewBufferPool(bufferPoolSize(cfg)),
+		db:          db,
+		m:           m,
+		log:         log,
+		fatal:       make(chan error, 1),
+		webhookAddr: cfg.WebhookAddr,
+		pipelines:   map[string]*pipelineRuntime{},
+		wanted:      map[string]bool{},
 	}
-	mux := http.NewServeMux()
-	var maxPart int64
-	for _, pc := range cfg.Pipelines {
-		p, err := e.buildPipeline(ctx, pc, mux)
-		if err != nil {
-			return fmt.Errorf("pipeline %s: %w", pc.Name, err)
-		}
-		e.pipelines[pc.Name] = p
-		maxPart = max(maxPart, int64(pc.PartSize)*int64(pc.PartConcurrency+1))
-	}
-	e.pool = transfer.NewBufferPool(max(maxBufferBytes, maxPart))
-
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &CopyWorker{e: e})
 	river.AddWorker(workers, &DeleteWorker{e: e})
 	river.AddWorker(workers, &ReconcileWorker{e: e})
-	e.client, err = queue.NewClient(db, workers, queue.QueuesFor(cfg.Pipelines), e.periodicReconciles(cfg)...)
+	reconcileWorkers := max(1, len(cfg.Pipelines))
+	if cfg.FromDatabase() {
+		reconcileWorkers = dbReconcileWorkers
+	}
+	// Copy queues and periodic reconciles are added per pipeline as it
+	// starts (manager.go).
+	e.client, err = queue.NewClient(db, workers, map[string]river.QueueConfig{
+		queue.QueueReconcile: {MaxWorkers: reconcileWorkers},
+	})
 	if err != nil {
 		return fmt.Errorf("river client: %w", err)
 	}
@@ -113,25 +143,54 @@ func Run(ctx context.Context, cfg *config.File, m *metrics.Metrics, log *slog.Lo
 		return err
 	}
 
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	e.ctx = runCtx
+	abort := func(err error) error {
+		cancelRun()
+		e.wg.Wait()
+		return err
+	}
+
+	// Start what's configured before the workers, so leftover jobs from a
+	// previous run find their pipeline.
+	var w *watcher
+	if cfg.FromDatabase() {
+		w = newWatcher(e)
+		if err := w.refresh(ctx); err != nil {
+			return abort(err)
+		}
+	} else {
+		e.mu.Lock()
+		for _, pc := range cfg.Pipelines {
+			e.wanted[pc.Name] = true
+		}
+		e.mu.Unlock()
+		for _, pc := range cfg.Pipelines {
+			if err := e.startPipeline(ctx, pc, 0); err != nil {
+				return abort(fmt.Errorf("pipeline %s: %w", pc.Name, err))
+			}
+		}
+	}
+
 	// Workers get a context that outlives the shutdown signal: on shutdown
 	// running copies get shutdownTimeout to finish and record their result,
 	// instead of being cut off mid-write.
 	if err := e.client.Start(context.WithoutCancel(ctx)); err != nil {
-		return fmt.Errorf("start workers: %w", err)
+		return abort(fmt.Errorf("start workers: %w", err))
 	}
-	log.Info("engine started", "pipelines", len(e.pipelines))
+	if w != nil {
+		e.wg.Go(func() { w.run(runCtx) })
+	}
+	log.Info("engine started", "pipelines", len(e.running()), "pipelines_from", cmp.Or(cfg.PipelinesFrom, config.PipelinesFromFile))
 
-	g, gctx := errgroup.WithContext(ctx)
-	for _, p := range e.pipelines {
-		if p.source != nil {
-			g.Go(func() error { e.superviseSource(gctx, p); return nil })
-		}
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case runErr = <-e.fatal:
 	}
-	if hasWebhook(cfg) {
-		g.Go(func() error { return serveWebhooks(gctx, cfg.WebhookAddr, mux, log) })
-	}
-	<-gctx.Done()
-	runErr := g.Wait()
+	cancelRun()
+	e.wg.Wait()
 
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
@@ -146,10 +205,10 @@ func Run(ctx context.Context, cfg *config.File, m *metrics.Metrics, log *slog.Lo
 			log.Warn("workers did not stop cleanly", "err", err)
 		}
 	}
-	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		return runErr
+	for _, p := range e.running() {
+		p.stopWork()
 	}
-	return nil
+	return runErr
 }
 
 func openDB(ctx context.Context, cfg *config.File) (*pgxpool.Pool, error) {
@@ -163,7 +222,10 @@ func openDB(ctx context.Context, cfg *config.File) (*pgxpool.Pool, error) {
 	for _, p := range cfg.Pipelines {
 		conns += int32(p.Concurrency)
 	}
-	pc.MaxConns = max(pc.MaxConns, min(conns, 64))
+	if cfg.FromDatabase() {
+		conns = dbMaxConns
+	}
+	pc.MaxConns = max(pc.MaxConns, min(conns, dbMaxConns))
 	db, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
 		return nil, fmt.Errorf("connect to database: %w", err)
@@ -175,68 +237,19 @@ func openDB(ctx context.Context, cfg *config.File) (*pgxpool.Pool, error) {
 	return db, nil
 }
 
-func (e *Engine) buildPipeline(ctx context.Context, pc config.Pipeline, mux *http.ServeMux) (*pipelineRuntime, error) {
-	src, err := connectorFactory(ctx, pc.Source)
-	if err != nil {
-		return nil, fmt.Errorf("source: %w", err)
+// bufferPoolSize: maxBufferBytes, or more if a configured pipeline's parts
+// need it. Pipelines from the database must fit maxBufferBytes.
+func bufferPoolSize(cfg *config.File) int64 {
+	var need int64
+	for _, pc := range cfg.Pipelines {
+		need = max(need, bufferNeed(pc))
 	}
-	dst, err := connectorFactory(ctx, pc.Destination)
-	if err != nil {
-		return nil, fmt.Errorf("destination: %w", err)
-	}
-	// Fail fast on a missing bucket or bad credentials rather than on the
-	// first copy. Listing the destination also proves read access, which
-	// verification needs.
-	if _, err := src.List(ctx, "", "", 1); err != nil {
-		return nil, fmt.Errorf("source check: %w", err)
-	}
-	if _, err := dst.List(ctx, "", "", 1); err != nil {
-		return nil, fmt.Errorf("destination check: %w", err)
-	}
-	filter, err := change.NewFilter(pc.Filters)
-	if err != nil {
-		return nil, fmt.Errorf("filters: %w", err)
-	}
-	p := &pipelineRuntime{cfg: pc, src: src, dst: dst, filter: filter}
+	return max(maxBufferBytes, need)
+}
 
-	if pc.ExistingFiles == "skip" {
-		if p.ignoreBefore, err = e.firstStarted(ctx, pc.Name); err != nil {
-			return nil, err
-		}
-	}
-
-	log := e.log.With("pipeline", pc.Name)
-	switch pc.Events.Type {
-	case "azure_queue":
-		p.source, err = azqueue.New(azqueue.Options{
-			PipelineID:      pc.Name,
-			QueueAccountURL: pc.Events.QueueAccountURL,
-			QueueName:       pc.Events.QueueName,
-			Auth:            *pc.Source.Azure,
-			Container:       pc.Source.Azure.Container,
-			Prefix:          pc.Source.Prefix,
-			Filter:          filter,
-			Log:             log,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("events: %w", err)
-		}
-	case "webhook":
-		if pc.Source.Azure == nil {
-			return nil, errors.New("events: webhook currently supports azure sources only")
-		}
-		src := webhook.NewSource(webhook.HandlerOptions{
-			PipelineID: pc.Name,
-			Secret:     pc.Events.WebhookSecret,
-			Container:  pc.Source.Azure.Container,
-			Prefix:     pc.Source.Prefix,
-			Filter:     filter,
-			Log:        log,
-		})
-		mux.Handle(pc.Events.WebhookPath, src.Handler())
-		p.source = src
-	}
-	return p, nil
+// bufferNeed is the most buffer memory one copy of pc holds at once.
+func bufferNeed(pc config.Pipeline) int64 {
+	return int64(pc.PartSize) * int64(pc.PartConcurrency+1)
 }
 
 // connectorFactory builds endpoint connectors. Tests in this package swap
@@ -266,10 +279,29 @@ func (e *Engine) firstStarted(ctx context.Context, pipelineID string) (time.Time
 	return t, nil
 }
 
+// lookup returns the running pipeline named name.
+func (e *Engine) lookup(name string) (*pipelineRuntime, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	p, ok := e.pipelines[name]
+	return p, ok
+}
+
+// running returns the running pipelines, ordered by name.
+func (e *Engine) running() []*pipelineRuntime {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]*pipelineRuntime, 0, len(e.pipelines))
+	for _, name := range slices.Sorted(maps.Keys(e.pipelines)) {
+		out = append(out, e.pipelines[name])
+	}
+	return out
+}
+
 // emit records a change and queues the work for it. It returns only once
 // the job is durably queued, so sources may then ack their message.
 func (e *Engine) emit(ctx context.Context, c change.ObjectChanged) error {
-	p, ok := e.pipelines[c.PipelineID]
+	p, ok := e.lookup(c.PipelineID)
 	if !ok {
 		return fmt.Errorf("unknown pipeline %q", c.PipelineID)
 	}
@@ -310,10 +342,12 @@ func (e *Engine) emit(ctx context.Context, c change.ObjectChanged) error {
 	})
 }
 
-// superviseSource runs a change source, restarting it after failures. A
-// source error (expired credentials, deleted queue) must be loud but must
-// not stop the engine: the reconciler keeps the pipeline syncing.
-func (e *Engine) superviseSource(ctx context.Context, p *pipelineRuntime) {
+// superviseSource runs a change source until the pipeline stops, restarting
+// it after failures. A source error (expired credentials, deleted queue)
+// must be loud but must not stop the pipeline: the reconciler keeps it
+// syncing.
+func (e *Engine) superviseSource(p *pipelineRuntime) {
+	ctx := p.runCtx
 	log := e.log.With("pipeline", p.cfg.Name, "source", p.source.Name())
 	for {
 		err := p.source.Run(ctx, e.emit)
@@ -329,13 +363,19 @@ func (e *Engine) superviseSource(ctx context.Context, p *pipelineRuntime) {
 	}
 }
 
-func hasWebhook(cfg *config.File) bool {
-	for _, p := range cfg.Pipelines {
-		if p.Events.Type == "webhook" {
-			return true
-		}
-	}
-	return false
+// ensureWebhookServer starts the shared webhook listener the first time a
+// pipeline with webhook events starts. A listener failure stops the engine.
+func (e *Engine) ensureWebhookServer() {
+	e.hookServer.Do(func() {
+		e.wg.Go(func() {
+			if err := serveWebhooks(e.ctx, e.webhookAddr, &e.hooks, e.log); err != nil {
+				select {
+				case e.fatal <- err:
+				default:
+				}
+			}
+		})
+	})
 }
 
 func serveWebhooks(ctx context.Context, addr string, h http.Handler, log *slog.Logger) error {
@@ -362,10 +402,16 @@ func serveWebhooks(ctx context.Context, addr string, h http.Handler, log *slog.L
 }
 
 // registerGauges exposes queue depth and the oldest pending change (the lag
-// building up right now) as scrape-time gauges.
+// building up right now) as scrape-time gauges, for the pipelines running
+// at scrape time.
 func (e *Engine) registerGauges() error {
 	if e.m == nil {
 		return nil
+	}
+	names := func() []string {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+		return slices.Collect(maps.Keys(e.pipelines))
 	}
 	err := e.m.RegisterQueueDepth(func(ctx context.Context) (map[string]int64, error) {
 		rows, err := e.db.Query(ctx, `
@@ -382,16 +428,13 @@ func (e *Engine) registerGauges() error {
 		if err != nil {
 			return nil, err
 		}
-		out := map[string]int64{}
-		for name := range e.pipelines {
-			out[name] = 0
-		}
+		depth := make(map[string]int64, len(byQueue))
 		for _, q := range byQueue {
-			for name := range e.pipelines {
-				if q.Queue == queue.CopyQueue(name) {
-					out[name] = q.N
-				}
-			}
+			depth[q.Queue] = q.N
+		}
+		out := map[string]int64{}
+		for _, name := range names() {
+			out[name] = depth[queue.CopyQueue(name)]
 		}
 		return out, nil
 	})
@@ -407,7 +450,7 @@ func (e *Engine) registerGauges() error {
 			return nil, err
 		}
 		out := map[string]time.Duration{}
-		for name := range e.pipelines {
+		for _, name := range names() {
 			out[name] = 0
 		}
 		var (
