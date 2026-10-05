@@ -243,6 +243,7 @@ type fakeDest struct {
 	objs  map[string][]byte
 	meta  map[string]map[string]string
 	flaky map[string]int // Stat errors to return before succeeding
+	short map[string]int // empty bodies to return before the real one
 }
 
 func (f *fakeDest) Stat(_ context.Context, key string) (connector.ObjectInfo, error) {
@@ -266,6 +267,10 @@ func (f *fakeDest) OpenRange(_ context.Context, key, _ string, _, _ int64) (io.R
 	b, ok := f.objs[key]
 	if !ok {
 		return nil, connector.ErrNotFound
+	}
+	if f.short[key] > 0 { // truncated response body
+		f.short[key]--
+		return io.NopCloser(bytes.NewReader(nil)), nil
 	}
 	return io.NopCloser(bytes.NewReader(b)), nil
 }
@@ -328,6 +333,19 @@ func TestCheck(t *testing.T) {
 		t.Errorf("size-only result = %+v", res)
 	}
 
+	// A truncated body is retried, not reported as a size mismatch.
+	dst.short = map[string]int{"ok": 1}
+	res = check(context.Background(), dst, targets[:1], checkOptions{})
+	if res.OK != 1 {
+		t.Errorf("short read once: result = %+v", res)
+	}
+	dst.short = map[string]int{"ok": 100}
+	res = check(context.Background(), dst, targets[:1], checkOptions{Attempts: 2})
+	if res.Errors != 1 || res.SizeMismatch != 0 {
+		t.Errorf("persistent short read: result = %+v", res)
+	}
+	dst.short = nil
+
 	// Persistent errors are reported as errors, not passes.
 	dst.flaky["ok"] = 100
 	res = check(context.Background(), dst, targets[:1], checkOptions{Attempts: 2})
@@ -378,5 +396,17 @@ func TestWriteSummary(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary lacks %q:\n%s", want, s)
 		}
+	}
+}
+
+func TestAttemptTimeout(t *testing.T) {
+	if got := attemptTimeout(0, 0); got != 2*time.Minute {
+		t.Errorf("empty object: %v", got)
+	}
+	if got := attemptTimeout(600e6, 0); got != 12*time.Minute {
+		t.Errorf("600 MB at the default 1 MB/s: %v, want 12m", got)
+	}
+	if got := attemptTimeout(600e6, 10e6); got != 3*time.Minute {
+		t.Errorf("600 MB at 10 MB/s: %v, want 3m", got)
 	}
 }

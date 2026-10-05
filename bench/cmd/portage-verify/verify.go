@@ -92,6 +92,17 @@ type checkOptions struct {
 	DestPrefix string
 	// Attempts per entry for transient errors (default 3).
 	Attempts int
+	// MinRate (bytes/s) sizes the per-attempt timeout: 2m + size/MinRate.
+	// Default 1 MB/s.
+	MinRate float64
+}
+
+// attemptTimeout bounds one check of an object of size bytes.
+func attemptTimeout(size int64, minRate float64) time.Duration {
+	if minRate <= 0 {
+		minRate = 1e6
+	}
+	return 2*time.Minute + time.Duration(float64(size)/minRate*float64(time.Second))
 }
 
 // checkResult summarises a verification.
@@ -254,7 +265,11 @@ func runChecks(ctx context.Context, dst destination, targets []target, opts chec
 func checkWithRetry(ctx context.Context, dst destination, t target, opts checkOptions, hashed *atomic.Int64) outcome {
 	var o outcome
 	for attempt := 1; ; attempt++ {
-		o = checkOne(ctx, dst, t, opts.SizeOnly, hashed)
+		// Bound each attempt so a stalled connection (no error, no bytes)
+		// becomes a retry instead of hanging the whole run.
+		actx, cancel := context.WithTimeout(ctx, attemptTimeout(t.Entry.Size, opts.MinRate))
+		o = checkOne(actx, dst, t, opts.SizeOnly, hashed)
+		cancel()
 		if o.fail == nil || o.fail.Problem != problemError || attempt >= opts.Attempts || ctx.Err() != nil {
 			return o
 		}
@@ -325,9 +340,11 @@ func checkOne(ctx context.Context, dst destination, t target, sizeOnly bool, has
 	sum := hex.EncodeToString(h.Sum(nil))
 	switch {
 	case n != e.Size:
-		o.fail = fail(problemSizeMismatch)
+		// Stat already matched the size, so a short body is a transport
+		// problem (truncated response), not proof of a bad object: retry.
+		o.fail = fail(problemError)
 		o.fail.ActualSize = n
-		o.fail.Error = "streamed length differs from Stat size"
+		o.fail.Error = fmt.Sprintf("short read: got %d of %d bytes", n, e.Size)
 	case !strings.EqualFold(sum, e.SHA256):
 		o.fail = fail(problemSHAMismatch)
 		o.fail.ActualSize = n
