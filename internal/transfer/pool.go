@@ -9,26 +9,34 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// BufferPool bounds the bytes held by in-flight part buffers across every
-// copy in the process. Acquire blocks (FIFO, so large requests are not
-// starved) until enough capacity is free; that is the engine's memory
-// backpressure. Released buffers are recycled per size to spare the GC.
+// BufferPool bounds the bytes held by part buffers across every copy in the
+// process: buffers in use plus idle buffers kept for reuse never exceed Cap.
+// Acquire blocks (FIFO, so large requests are not starved) until enough
+// capacity is free; that is the engine's memory backpressure. Idle buffers
+// are recycled per size class; when capacity is needed for a different size
+// they are dropped (left to the GC) rather than kept beyond the cap. The
+// previous design recycled through unbounded sync.Pools, which let idle
+// buffers pile up outside the cap (the local soak saw a 4 GB heap with a
+// 2 GiB cap).
 type BufferPool struct {
 	max   int64
 	sem   *semaphore.Weighted
 	inUse atomic.Int64
 	peak  atomic.Int64
-	free  sync.Map // int64 capacity -> *sync.Pool of *[]byte
+
+	mu        sync.Mutex
+	idle      map[int64][][]byte // size class -> idle buffers
+	idleBytes int64
 }
 
-// NewBufferPool bounds total bytes held by in-flight part buffers across all
-// copies. maxBytes must be at least the largest part (or single-put object)
-// any copy will use; see Copy.
+// NewBufferPool bounds total bytes held by part buffers across all copies.
+// maxBytes must be at least the largest part (or single-put object) any copy
+// will use; see Copy.
 func NewBufferPool(maxBytes int64) *BufferPool {
 	if maxBytes < 1 {
 		maxBytes = 1
 	}
-	return &BufferPool{max: maxBytes, sem: semaphore.NewWeighted(maxBytes)}
+	return &BufferPool{max: maxBytes, sem: semaphore.NewWeighted(maxBytes), idle: map[int64][][]byte{}}
 }
 
 // Cap returns the pool's byte limit.
@@ -36,6 +44,13 @@ func (p *BufferPool) Cap() int64 { return p.max }
 
 // InUse returns the bytes currently held by acquired buffers.
 func (p *BufferPool) InUse() int64 { return p.inUse.Load() }
+
+// Idle returns the bytes held by idle buffers kept for reuse.
+func (p *BufferPool) Idle() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.idleBytes
+}
 
 // recycleMin is the smallest buffer recycled. Larger requests are rounded up
 // to a multiple of it, so the set of recycled sizes stays small (part sizes
@@ -71,10 +86,22 @@ func (p *BufferPool) acquire(ctx context.Context, n int64) ([]byte, error) {
 			break
 		}
 	}
+
+	p.mu.Lock()
+	var buf []byte
 	if c >= recycleMin {
-		if b, ok := p.sizePool(c).Get().(*[]byte); ok && b != nil {
-			return (*b)[:n], nil
+		if list := p.idle[c]; len(list) > 0 {
+			buf = list[len(list)-1]
+			p.idle[c] = list[:len(list)-1]
+			p.idleBytes -= c
 		}
+	}
+	// Keep in-use + idle within the cap: drop idle buffers of other sizes.
+	p.evictLocked(cur)
+	p.mu.Unlock()
+
+	if buf != nil {
+		return buf[:n], nil
 	}
 	return make([]byte, n, c), nil
 }
@@ -85,18 +112,33 @@ func (p *BufferPool) release(b []byte) {
 	if c == 0 {
 		return
 	}
+	cur := p.inUse.Add(-c)
 	if c >= recycleMin {
-		b = b[:c]
-		p.sizePool(c).Put(&b)
+		p.mu.Lock()
+		if cur+p.idleBytes+c <= p.max {
+			p.idle[c] = append(p.idle[c], b[:c])
+			p.idleBytes += c
+		}
+		p.mu.Unlock()
 	}
-	p.inUse.Add(-c)
 	p.sem.Release(c)
 }
 
-func (p *BufferPool) sizePool(c int64) *sync.Pool {
-	if v, ok := p.free.Load(c); ok {
-		return v.(*sync.Pool)
+// evictLocked drops idle buffers until inUse + idle <= max. p.mu is held.
+func (p *BufferPool) evictLocked(inUse int64) {
+	for size, list := range p.idle {
+		for len(list) > 0 && inUse+p.idleBytes > p.max {
+			list[len(list)-1] = nil
+			list = list[:len(list)-1]
+			p.idleBytes -= size
+		}
+		if len(list) == 0 {
+			delete(p.idle, size)
+		} else {
+			p.idle[size] = list
+		}
+		if inUse+p.idleBytes <= p.max {
+			return
+		}
 	}
-	v, _ := p.free.LoadOrStore(c, &sync.Pool{})
-	return v.(*sync.Pool)
 }

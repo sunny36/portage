@@ -73,6 +73,8 @@ const (
 	DefaultPartSize        = 8 << 20
 	DefaultPartConcurrency = 4
 	DefaultHeartbeatEvery  = 30 * time.Second
+	DefaultOpTimeoutBase   = 60 * time.Second
+	DefaultMinThroughput   = 256 << 10
 	DefaultRetryAttempts   = 4
 	DefaultRetryBaseDelay  = 200 * time.Millisecond
 	DefaultRetryMaxDelay   = 15 * time.Second
@@ -130,6 +132,11 @@ type Options struct {
 	RetryAttempts  int
 	RetryBaseDelay time.Duration
 	RetryMaxDelay  time.Duration
+	// OpTimeoutBase and MinThroughput set each attempt's deadline:
+	// OpTimeoutBase + bytes/MinThroughput (defaults 60s and 256 KiB/s, so
+	// a 64 MiB part gets ~5 minutes). A negative OpTimeoutBase disables it.
+	OpTimeoutBase time.Duration
+	MinThroughput int64
 	// SampleSeed picks the verification sample ranges; 0 means random.
 	SampleSeed uint64
 }
@@ -168,10 +175,13 @@ func Copy(ctx context.Context, req Request, opts Options, hooks Hooks) (Result, 
 	stopHeartbeat := startHeartbeat(ctx, cancel, hooks.Heartbeat, opts.HeartbeatEvery)
 
 	c := &copier{
-		req:      req,
-		opts:     opts,
-		hooks:    hooks,
-		rt:       retryer{attempts: opts.RetryAttempts, base: opts.RetryBaseDelay, max: opts.RetryMaxDelay},
+		req:   req,
+		opts:  opts,
+		hooks: hooks,
+		rt: retryer{
+			attempts: opts.RetryAttempts, base: opts.RetryBaseDelay, max: opts.RetryMaxDelay,
+			opBase: opts.OpTimeoutBase, minRate: opts.MinThroughput,
+		},
 		hasher:   sha256.New(),
 		sampler:  verify.NewSampler(req.Info.Size, opts.SampleSeed),
 		partSize: partSize,
@@ -196,6 +206,12 @@ func withDefaults(o Options, partSize int64, lim connector.Limits) Options {
 	}
 	if o.HeartbeatEvery <= 0 {
 		o.HeartbeatEvery = DefaultHeartbeatEvery
+	}
+	if o.OpTimeoutBase == 0 {
+		o.OpTimeoutBase = DefaultOpTimeoutBase
+	}
+	if o.MinThroughput <= 0 {
+		o.MinThroughput = DefaultMinThroughput
 	}
 	if o.SinglePutMax <= 0 {
 		o.SinglePutMax = partSize
@@ -307,7 +323,7 @@ func (c *copier) onBytes(n int64) {
 // readInto fills buf with source bytes [off, off+len(buf)) of Info.Version
 // and feeds them to the hasher and sampler. Calls must be in offset order.
 func (c *copier) readInto(ctx context.Context, off int64, buf []byte) error {
-	err := c.rt.do(ctx, func(ctx context.Context) error {
+	err := c.rt.doSized(ctx, int64(len(buf)), func(ctx context.Context) error {
 		rc, err := c.req.Src.OpenRange(ctx, c.req.SrcKey, c.req.Info.Version, off, int64(len(buf)))
 		if err != nil {
 			return err
@@ -351,7 +367,7 @@ func (c *copier) single(ctx context.Context) (Result, error) {
 		Metadata:    map[string]string{connector.MetaSHA256: hex.EncodeToString(sum)},
 	}
 	var wr connector.WriteResult
-	err = c.rt.do(ctx, func(ctx context.Context) error {
+	err = c.rt.doSized(ctx, size, func(ctx context.Context) error {
 		var err error
 		wr, err = c.req.Dst.PutObject(ctx, c.req.DstKey, bytes.NewReader(buf), size, wo)
 		return err
@@ -515,7 +531,7 @@ func (c *copier) streamParts(ctx context.Context, up connector.Upload, reuse map
 		g.Go(func() error {
 			defer c.opts.Pool.release(buf)
 			var p connector.Part
-			err := c.rt.do(gctx, func(ctx context.Context) error {
+			err := c.rt.doSized(gctx, int64(len(buf)), func(ctx context.Context) error {
 				var err error
 				p, err = up.UploadPart(ctx, n, buf)
 				return err
@@ -544,7 +560,7 @@ func (c *copier) streamParts(ctx context.Context, up connector.Upload, reuse map
 func (c *copier) complete(ctx context.Context, up connector.Upload, parts []connector.Part) (connector.WriteResult, error) {
 	var wr connector.WriteResult
 	tries := 0
-	err := c.rt.do(ctx, func(ctx context.Context) error {
+	err := c.rt.doSized(ctx, c.req.Info.Size/16, func(ctx context.Context) error {
 		tries++
 		var err error
 		wr, err = up.Complete(ctx, parts)

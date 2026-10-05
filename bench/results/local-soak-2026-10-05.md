@@ -70,6 +70,10 @@ Loadgen records only successful uploads, so none of the five is in the manifest.
   synced with the same size and SHA-256 as the manifest, and that one key was pending.
 
 ## Engine bug: an orphaned River job blocks a key (or the reconciler) for 7 h
+
+> **Fixed in 2aada3e.** Copy and reconcile jobs carry a time window in their
+> dedupe key, so an orphaned job blocks its key for at most 5 minutes (copies)
+> or two reconcile intervals.
 **What happens.** River's `JobGetAvailable` can time out on the client after Postgres
 has already committed the fetch (this run logged `timed out after 10s` during
 database stalls). The job is then left in state `running` with no worker. Job 13
@@ -97,20 +101,28 @@ reconcile, drop `Running` from `ByState` and rely on the per-pipeline queue havi
 14 482 s.
 
 ## Other findings
+All fixed: 1–2 in 2aada3e, 3–5 in the commit that adds this note.
+
 1. Config validation requires `events.queue_account_url` even with
    `auth: connection_string` (internal/config/config.go:244). The azqueue source
-   ignores that field.
+   ignores that field. **Fixed:** optional with `connection_string` auth.
 2. A single failed heartbeat (`ExtendLease`) cancels a running copy
    (internal/transfer/transfer.go:273), even though the 2 min lease leaves room for
    3 more tries. A 10 s database stall restarts a multi-GB copy. The copy resumes, but
-   the work is wasted.
+   the work is wasted. **Fixed:** renewal errors are tolerated while the lease
+   is safely valid; a lost lease still stops the copy.
 3. The 2 GiB buffer cap is not a memory cap. Idle buffers are kept in per-size
    `sync.Pool`s outside the semaphore (internal/transfer/pool.go), and size classes
    are rounded to 1 MiB, giving up to 64 of them. The heap reached 4 GB. Set
-   `GOMEMLIMIT` and size the VM for at least 4–5 GB.
+   `GOMEMLIMIT` and size the VM for at least 4–5 GB. **Fixed:** idle buffers count
+   against the cap (in-use + idle ≤ cap), and the engine sets a soft Go memory
+   limit of pool + 1 GiB unless `GOMEMLIMIT` is set.
 4. Requests have no per-request timeout: no Azure `TryTimeout`, and no S3
    `ResponseHeaderTimeout`. The heartbeat keeps the lease alive even when no bytes are
    moving, so a stalled connection that is never reset holds a key until the 6 h
-   `copyTimeout`.
+   `copyTimeout`. **Fixed:** every read, upload and commit attempt has a deadline
+   of 60 s + bytes / 256 KiB/s; a stall becomes a retryable `ErrStalled`.
 5. `portage run` exits if the destination is unreachable at start. Run it under a
-   supervisor that restarts it.
+   supervisor that restarts it. **Fixed:** a pipeline that fails its start checks
+   retries in the background (15 s, doubling to 5 min) while the engine and other
+   pipelines keep running. A missing database is still fatal.

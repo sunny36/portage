@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -567,4 +568,82 @@ func TestRequestValidation(t *testing.T) {
 	if _, err := Copy(ctxT(t), req, testOpts(), Hooks{}); err == nil {
 		t.Fatal("empty version must fail")
 	}
+}
+
+// A stalled part upload (no bytes, no reset) must time out and be retried
+// instead of holding the copy until the job timeout (soak finding).
+func TestStalledPartTimesOutAndRetries(t *testing.T) {
+	f := newFixture(t, 300*kib)
+	var stalls atomic.Int32
+	f.dst.UploadPartHook = func(number int) error {
+		if number == 2 && stalls.Add(1) == 1 {
+			time.Sleep(300 * time.Millisecond) // well past the attempt deadline
+		}
+		return nil
+	}
+	opts := testOpts()
+	opts.OpTimeoutBase = 50 * time.Millisecond
+	opts.MinThroughput = 1 << 40 // deadline ≈ OpTimeoutBase for these tiny parts
+	res, err := Copy(ctxT(t), f.req, opts, Hooks{})
+	if err != nil {
+		t.Fatalf("copy with one stalled part: %v", err)
+	}
+	f.assertCopied(t, res)
+	if stalls.Load() < 2 {
+		t.Fatalf("part 2 attempted %d times, want a retry after the stall", stalls.Load())
+	}
+
+	// A part that stalls on every attempt fails the copy with ErrStalled.
+	g := newFixture(t, 300*kib)
+	g.dst.UploadPartHook = func(number int) error {
+		if number == 2 {
+			time.Sleep(150 * time.Millisecond)
+		}
+		return nil
+	}
+	opts.RetryAttempts = 2
+	if _, err := Copy(ctxT(t), g.req, opts, Hooks{}); !errors.Is(err, ErrStalled) {
+		t.Fatalf("always-stalling part: err = %v, want ErrStalled", err)
+	}
+}
+
+// Idle buffers count against the cap: cycling many size classes must never
+// leave in-use + idle above Cap (the old sync.Pool design let idle buffers
+// pile up outside it; the soak saw a 4 GB heap with a 2 GiB cap).
+func TestPoolIdleBuffersWithinCap(t *testing.T) {
+	const mib = 1 << 20
+	p := NewBufferPool(16 * mib)
+	ctx := context.Background()
+	check := func(when string) {
+		t.Helper()
+		if got := p.InUse() + p.Idle(); got > p.Cap() {
+			t.Fatalf("%s: in-use %d + idle %d = %d > cap %d", when, p.InUse(), p.Idle(), got, p.Cap())
+		}
+	}
+	for round := range 5 {
+		for _, size := range []int64{1, 2, 3, 5, 7} {
+			var held [][]byte
+			for range 16 / size {
+				b, err := p.acquire(ctx, size*mib)
+				if err != nil {
+					t.Fatal(err)
+				}
+				held = append(held, b)
+				check(fmt.Sprintf("round %d acquire %d MiB", round, size))
+			}
+			for _, b := range held {
+				p.release(b)
+				check(fmt.Sprintf("round %d release %d MiB", round, size))
+			}
+		}
+	}
+	// Reuse still happens for a repeated size.
+	b, _ := p.acquire(ctx, 4*mib)
+	p.release(b)
+	idle := p.Idle()
+	b, _ = p.acquire(ctx, 4*mib)
+	if p.Idle() >= idle {
+		t.Fatalf("idle %d -> %d: a same-size acquire should reuse an idle buffer", idle, p.Idle())
+	}
+	p.release(b)
 }

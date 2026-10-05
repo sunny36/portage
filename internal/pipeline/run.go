@@ -23,6 +23,8 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"os"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -112,9 +114,11 @@ func Run(ctx context.Context, cfg *config.File, m *metrics.Metrics, log *slog.Lo
 		return err
 	}
 
+	poolSize := bufferPoolSize(cfg)
+	setMemoryLimit(poolSize, log)
 	e := &Engine{
 		store:       record.NewPGStore(db),
-		pool:        transfer.NewBufferPool(bufferPoolSize(cfg)),
+		pool:        transfer.NewBufferPool(poolSize),
 		db:          db,
 		m:           m,
 		log:         log,
@@ -168,7 +172,12 @@ func Run(ctx context.Context, cfg *config.File, m *metrics.Metrics, log *slog.Lo
 		e.mu.Unlock()
 		for _, pc := range cfg.Pipelines {
 			if err := e.startPipeline(ctx, pc, 0); err != nil {
-				return abort(fmt.Errorf("pipeline %s: %w", pc.Name, err))
+				// A destination that's down or a bucket not created yet must
+				// not take the whole engine (and its other pipelines) down,
+				// nor need an external supervisor: retry in the background.
+				log.Error("pipeline failed its start checks; retrying in the background", "pipeline", pc.Name, "err", err)
+				e.m.PipelineConfigError(ctx, pc.Name)
+				e.wg.Go(func() { e.retryStart(runCtx, pc) })
 			}
 		}
 	}
@@ -466,4 +475,54 @@ func (e *Engine) registerGauges() error {
 		})
 		return out, err
 	})
+}
+
+// memoryOverhead is the headroom above the part-buffer pool for everything
+// else (SDK clients, River, connection pools, goroutine stacks).
+const memoryOverhead = 1 << 30
+
+// setMemoryLimit sets a soft Go memory limit of pool + overhead unless the
+// operator set GOMEMLIMIT. Buffers dropped by the pool are garbage the GC
+// otherwise collects lazily; the limit makes it collect before the heap
+// grows far past what the engine actually holds.
+func setMemoryLimit(poolSize int64, log *slog.Logger) {
+	if os.Getenv("GOMEMLIMIT") != "" {
+		log.Info("memory limit from GOMEMLIMIT", "limit", os.Getenv("GOMEMLIMIT"))
+		return
+	}
+	limit := poolSize + memoryOverhead
+	debug.SetMemoryLimit(limit)
+	log.Info("soft memory limit set (override with GOMEMLIMIT)", "limit_mib", limit>>20, "buffer_pool_mib", poolSize>>20)
+}
+
+// startRetryBase and startRetryMax bound the backoff for a file-mode
+// pipeline that failed its start checks (variables so tests can shorten them).
+var (
+	startRetryBase = 15 * time.Second
+	startRetryMax  = 5 * time.Minute
+)
+
+// retryStart keeps trying to start pc until it starts or ctx ends. Its
+// queued jobs wait (snooze) meanwhile, so nothing is lost.
+func (e *Engine) retryStart(ctx context.Context, pc config.Pipeline) {
+	log := e.log.With("pipeline", pc.Name)
+	delay := startRetryBase
+	for attempt := 2; ; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		err := e.startPipeline(ctx, pc, 0)
+		if err == nil {
+			log.Info("pipeline started after failed start checks", "attempt", attempt)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		delay = min(2*delay, startRetryMax)
+		log.Error("pipeline still failing its start checks", "attempt", attempt, "retry_in", delay, "err", err)
+		e.m.PipelineConfigError(ctx, pc.Name)
+	}
 }
