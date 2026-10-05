@@ -74,6 +74,19 @@ Setting up real clouds: [Azure source](docs/setup/azure.md),
 `portage check` tests credentials, permissions, buckets, events and the
 database against the real endpoints and says how to fix what fails.
 
+### Pipelines from a database
+With `pipelines_from: database` ([`examples/pipelines-db.yaml`](examples/pipelines-db.yaml))
+the engine takes its pipelines from the `pipeline_spec` table instead of the
+file, and starts, restarts or stops them while it runs (within seconds via
+`LISTEN/NOTIFY`, at worst within 30 s). Each row holds one pipeline in the
+same format as a `pipelines:` entry; an invalid row is logged, counted in
+`portage_pipeline_config_errors` and skipped without affecting the others.
+Credentials go in `secret://<name>` references, resolved from
+`$PORTAGE_SECRETS_DIR/<name>` or `PORTAGE_SECRET_<NAME>` (they work in the
+file too). Manage rows with `portage pipelines list|apply|enable|disable|delete`
+or from your own control plane; the contract is
+[ADR 0004](docs/adr/0004-pipelines-from-database.md).
+
 ## Roadmap
 Portage is early. Here's what's built and what's next; priorities follow what
 users ask for, so [open an issue](https://github.com/sunny36/portage/issues)

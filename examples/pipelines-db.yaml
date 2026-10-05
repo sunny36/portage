@@ -1,0 +1,55 @@
+# Pipelines from the database (docs/adr/0004-pipelines-from-database.md).
+#
+# The engine config holds only the database and listener settings:
+#
+#   version: 1
+#   database_url: postgres://portage:portage@127.0.0.1:25432/portage?sslmode=disable
+#   metrics_addr: ":9090"
+#   pipelines_from: database
+#
+# and the pipelines live in the pipeline_spec table. This file is the input
+# to `portage pipelines apply`: a pipelines: list in the usual format, one
+# row per entry (the row name is the entry's name).
+#
+#   portage pipelines apply -c engine.yaml -f examples/pipelines-db.yaml
+#   portage pipelines list -c engine.yaml
+#   portage pipelines disable -c engine.yaml azure-to-s3-local
+#
+# Credentials are secret://<name> references, resolved by each engine from
+# the file $PORTAGE_SECRETS_DIR/<name> (one trailing newline trimmed), else
+# the environment variable PORTAGE_SECRET_<NAME> (upper-cased, - and . -> _).
+# ${VAR} is not expanded in stored pipelines. For this local example:
+#
+#   export PORTAGE_SECRET_AZURITE_CONNECTION_STRING='DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:20000/devstoreaccount1;QueueEndpoint=http://127.0.0.1:20001/devstoreaccount1;'
+#   export PORTAGE_SECRET_SEAWEED_ACCESS_KEY_ID=portage
+#   export PORTAGE_SECRET_SEAWEED_SECRET_ACCESS_KEY=portage-secret
+#
+# The row's spec column is the same entry as JSON, without the name, e.g.:
+#   {"source": {"prefix": "incoming/", "azure": {"account_url": "...", "container": "source",
+#    "auth": "connection_string", "connection_string": "secret://azurite-connection-string"}},
+#    "destination": {...}, "events": {"type": "none"}, "part_size": "8MiB", "reconcile_interval": "1m"}
+
+pipelines:
+  - name: azure-to-s3-local
+    source:
+      prefix: incoming/
+      azure:
+        account_url: http://127.0.0.1:20000/devstoreaccount1
+        container: source
+        auth: connection_string
+        connection_string: secret://azurite-connection-string
+    destination:
+      prefix: from-azure/
+      s3:
+        bucket: dest
+        region: us-east-1
+        endpoint: http://127.0.0.1:28333
+        path_style: true
+        flavor: generic
+        access_key_id: secret://seaweed-access-key-id
+        secret_access_key: secret://seaweed-secret-access-key
+    events:
+      type: none
+    concurrency: 8
+    part_size: 8MiB
+    reconcile_interval: 1m

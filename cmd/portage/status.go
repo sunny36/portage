@@ -13,7 +13,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 
@@ -30,6 +29,9 @@ const (
 type statusOpts struct {
 	json  bool
 	watch time.Duration
+	// specs lists the pipelines with pipelines_from: database (re-read on
+	// every refresh); nil means the config file's pipelines.
+	specs func(ctx context.Context) ([]record.PipelineSpec, error)
 }
 
 func newStatusCmd(o *rootOpts) *cobra.Command {
@@ -60,6 +62,11 @@ func newStatusCmd(o *rootOpts) *cobra.Command {
 				return fmt.Errorf("database: %w", err)
 			}
 			defer pool.Close()
+			if cfg.FromDatabase() {
+				so.specs = func(ctx context.Context) ([]record.PipelineSpec, error) {
+					return record.ListPipelineSpecs(ctx, pool)
+				}
+			}
 			return runStatus(ctx, cmd.OutOrStdout(), cfg, record.NewPGStore(pool), so, time.Now)
 		},
 	}
@@ -73,7 +80,10 @@ type statsSource interface {
 }
 
 type pipelineStatus struct {
-	Name               string        `json:"name"`
+	Name string `json:"name"`
+	// Enabled and Revision are set with pipelines_from: database.
+	Enabled            *bool         `json:"enabled,omitempty"`
+	Revision           int64         `json:"revision,omitempty"`
 	Synced             int64         `json:"synced"`
 	Pending            int64         `json:"pending"`
 	Copying            int64         `json:"copying"`
@@ -101,7 +111,7 @@ type statusReport struct {
 
 func runStatus(ctx context.Context, w io.Writer, cfg *config.File, store statsSource, so *statusOpts, now func() time.Time) error {
 	for {
-		rep, err := collectStatus(ctx, cfg, store, now())
+		rep, err := collectStatus(ctx, cfg, store, so, now())
 		if err != nil {
 			if so.watch > 0 && ctx.Err() != nil {
 				return nil
@@ -125,25 +135,42 @@ func runStatus(ctx context.Context, w io.Writer, cfg *config.File, store statsSo
 	}
 }
 
-func collectStatus(ctx context.Context, cfg *config.File, store statsSource, now time.Time) (statusReport, error) {
+func collectStatus(ctx context.Context, cfg *config.File, store statsSource, so *statusOpts, now time.Time) (statusReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
 	defer cancel()
 	rep := statusReport{GeneratedAt: now.UTC(), Pipelines: []pipelineStatus{}}
+	noData := func() (statusReport, error) {
+		rep.Note = noDataMsg
+		rep.Pipelines = []pipelineStatus{}
+		return rep, nil
+	}
+	targets := make([]pipelineStatus, 0, len(cfg.Pipelines))
 	for _, p := range cfg.Pipelines {
-		st, err := store.Stats(ctx, p.Name)
+		targets = append(targets, pipelineStatus{Name: p.Name})
+	}
+	if so.specs != nil {
+		specs, err := so.specs(ctx)
+		if isUndefinedTable(err) {
+			return noData()
+		}
 		if err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "42P01" { // undefined_table
-				rep.Note = noDataMsg
-				rep.Pipelines = []pipelineStatus{}
-				return rep, nil
+			return rep, err
+		}
+		for _, s := range specs {
+			targets = append(targets, pipelineStatus{Name: s.Name, Enabled: &s.Enabled, Revision: s.Revision})
+		}
+	}
+	for _, t := range targets {
+		st, err := store.Stats(ctx, t.Name)
+		if err != nil {
+			if isUndefinedTable(err) {
+				return noData()
 			}
-			return rep, fmt.Errorf("status of %s: %w", p.Name, err)
+			return rep, fmt.Errorf("status of %s: %w", t.Name, err)
 		}
-		ps := pipelineStatus{
-			Name: p.Name, Synced: st.Synced, Pending: st.Pending, Copying: st.Copying, Failed: st.Failed,
-			BytesSynced: st.BytesSynced, RecentErrors: []recentError{},
-		}
+		ps := t
+		ps.Synced, ps.Pending, ps.Copying, ps.Failed = st.Synced, st.Pending, st.Copying, st.Failed
+		ps.BytesSynced, ps.RecentErrors = st.BytesSynced, []recentError{}
 		if !st.LastSyncedAt.IsZero() {
 			t := st.LastSyncedAt.UTC()
 			ps.LastSyncedAt = &t
@@ -190,8 +217,12 @@ func renderStatus(w io.Writer, rep statusReport, so *statusOpts) error {
 		if p.OldestPendingEvent != nil {
 			oldest = ago(now, *p.OldestPendingEvent)
 		}
+		name := p.Name
+		if p.Enabled != nil && !*p.Enabled {
+			name += " (disabled)"
+		}
 		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\n",
-			p.Name, p.Synced, p.Pending, p.Copying, p.Failed, humanBytes(p.BytesSynced), last, oldest)
+			name, p.Synced, p.Pending, p.Copying, p.Failed, humanBytes(p.BytesSynced), last, oldest)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
