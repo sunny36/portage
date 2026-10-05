@@ -40,7 +40,9 @@ services:
   seaweedfs:
     network_mode: bridge
     image: chrislusf/seaweedfs:latest
-    command: server -s3 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=256 -volume.max=50
+    # -volume.max=0 sizes the volume count from free disk; a fixed cap (it was
+    # 50 x 256 MB) filled up during soak runs and made S3 writes fail with 500.
+    command: server -s3 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=256 -volume.max=0
     volumes:
       - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
     ports: ["${PORTAGE_S3_PORT:-28333}:8333"]
